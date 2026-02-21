@@ -1,6 +1,5 @@
 # abDraw
-abDraw
-A lightweight desktop drawing application built with Python and Tkinter, designed for creating simple diagrams, flowcharts, and technical sketches.
+abDraw is a lightweight desktop drawing application built with Python and Tkinter, designed for creating simple diagrams, flowcharts, and technical sketches.
 Features
 
 Drawing tools — line, arrow, rectangle, square, circle, ellipse, triangle, and text
