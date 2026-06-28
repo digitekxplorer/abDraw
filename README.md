@@ -1,15 +1,48 @@
 # abDraw
-abDraw is a lightweight desktop drawing application built with Python and Tkinter, designed for creating simple diagrams, flowcharts, and technical sketches.
-Features
 
-Drawing tools — line, arrow, rectangle, square, circle, ellipse, triangle, and text
-Orthogonal lines — multi-turn 90° lines and arrows built by clicking to place waypoints, with right-click or Enter to finish; flip routing between horizontal-first and vertical-first with R
-Shape snapping — line and ortho endpoints snap to connection points on nearby shapes
-Grid — toggleable dot or line grid with configurable spacing (10–50 px); snap-to-grid for precise placement
-Labels — attach a moveable text label to any shape; line labels default to above the line
-Selection & editing — drag to move shapes, drag corner handles to resize, drag endpoint/waypoint handles to re-route lines
-Undo / Redo — full history stack (50 levels)
-Copy / Paste — duplicate any shape with an automatic offset
-Z-order — bring to front / send to back
-File format — saves and loads .abdraw files (JSON)
-PNG export — renders the canvas including grid to a PNG via Pillow
+A schematic-capture and diagramming application built entirely in **Python + Tkinter**. abDraw started as a general-purpose vector drawing tool and grew into a lightweight package for drawing real electronic schematics — named pins, primitives, auto-routed wires, multi-sheet packages, netlists, and PNG/PDF export — with no dependencies beyond Pillow.
+
+## Features
+
+- **Drawing tools** — line, arrow, rectangle, square, circle, ellipse, triangle, and text labels, with adjustable thickness, color, fill, and grid snapping.
+- **Schematic primitives** — mux (binary-labeled inputs, `sel`/`y`), register (D/Q/clk with clock triangle), adder (`+` glyph), and rotatable off-page connectors.
+- **Named pins / ports** — pins anchored to a block edge that wires bind to and stay attached through moves and resizes. Edit Pins… (`Ctrl+P`).
+- **Special pins** — one-click standard control pins with fixed placement: `en`/`set` (top), `clr` (bottom), and an optional `clk` (left, with clock triangle) on shapes that lack one. Special Pins… (`Ctrl+Shift+P`).
+- **Wires** — buses, bit-slice taps (e.g. `[7:0]`), automatic junction dots, net labels, and an **orthogonal auto-router** that keeps wires perpendicular to pins through every move, plus manual waypoint editing.
+- **Multi-sheet packages** — sheet tabs, per-sheet title block and page size (Letter/Legal/Tabloid/ANSI/A-series/Custom), scrollable pasteboard.
+- **Netlist & DRC** — cross-sheet netlist export (`.net`) and a validator that flags unconnected pins.
+- **Export** — Sheet/All-Sheets PNG, Sheet PDF, and full multi-page Package PDF (PIL-only, no Ghostscript).
+- **Editing** — 50-level undo/redo, copy/paste, z-order, and a JSON project format (human-readable, backward-compatible).
+
+## Requirements
+
+- Python 3.8+
+- [Pillow](https://python-pillow.org/) — `pip install Pillow` (for PNG/PDF export)
+
+Tkinter ships with the standard CPython installer on Windows and macOS; on Linux install `python3-tk`.
+
+## Getting Started
+
+```bash
+pip install Pillow
+python main.py
+```
+
+## Project Structure
+
+| File | Responsibility |
+|------|----------------|
+| `main.py` | Entry point / app bootstrap |
+| `shapes.py` | `Shape` & `Port` data classes, pin helpers, `STANDARD_PINS` |
+| `canvas_manager.py` | Rendering, orthogonal router, junctions, netlist, multi-sheet state |
+| `file_manager.py` | JSON save/load and the PIL PNG/PDF export engine |
+| `drawing_app.py` | Tkinter UI — tools, menus, dialogs, sheet tabs |
+
+## Keyboard Shortcuts
+
+`Ctrl+N/O/S` new/open/save · `Ctrl+Z/Y` undo/redo · `Ctrl+C/V` copy/paste · `Ctrl+L` add label · `Ctrl+P` Edit Pins · `Ctrl+Shift+P` Special Pins · `Ctrl+B` toggle bus · `Ctrl+R` rotate connector · `Ctrl+G` toggle grid · `Ctrl+H` toggle snap
+
+## License
+
+_Add your license here._
+
