@@ -44,5 +44,5 @@ python main.py
 
 ## License
 
-_Add your license here._
+_MIT License_
 
