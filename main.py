@@ -1,5 +1,12 @@
 # ============================================================================
-# abDraw - Professional Drawing Package
+# abDraw - Drawing Package
+#
+# History
+# 02/14/2026 Initial design: comprehensive, top-grade drawing and diagramming
+#            application built entirely in Python
+# 06/28/2026 Major revision: added multi-page, pin names, net auto-routing,
+#            schematic primitives, buses/bit-slice, and more
+#
 # ============================================================================
 # File structure for your project:
 #
