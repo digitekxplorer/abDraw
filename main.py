@@ -6,6 +6,12 @@
 #            application built entirely in Python
 # 06/28/2026 Major revision: added multi-page, pin names, net auto-routing,
 #            schematic primitives, buses/bit-slice, special pins, and more
+# 06/30/2026 - Shape fill: no-fill / pick-a-color, with pin/label text that
+#              auto-contrasts the fill (canvas + PNG/PDF export)
+#            - Note Arrow: non-electrical diagonal annotation arrow (never
+#              binds; excluded from netlist, DRC, junction dots)
+#            - Text alignment: left / center / right (canvas + export)
+#            - Fix: export now honors dragged net-label & bit-slice positions
 #
 # ============================================================================
 # File structure for your project:
