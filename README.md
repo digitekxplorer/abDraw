@@ -5,24 +5,6 @@ Python. The user develops it in PyCharm and pastes updated files back here. Our 
 extend/refactor the Python code. The goal target is recreating CPU-datapath schematics like
 the two reference images in `uploads/` (a 16-bit CPU core, "abCore16").
 
-## Where the code lives
-
-- **`uploads/abDraw_current/`** — the CURRENT canonical working version. Always read/edit
-  these five files: `main.py`, `drawing_app.py`, `canvas_manager.py`, `shapes.py`,
-  `file_manager.py`.
-- `uploads/src06/` — a previous snapshot. Do not edit; reference only.
-- `uploads/abCore16_code/` — an older snapshot (Phases 1–6). Do not edit; reference only.
-- `uploads/abCore16_sch01.jpg`, `uploads/abCore16_sch02.jpg` — target schematic images.
-- `abCore16 Schematic Preview.dc.html` — an early HTML mock of the target output (not the app).
-
-### Editing gotcha (IMPORTANT)
-The Python files use **CRLF line endings**, so the `str_replace_edit` tool often fails with
-"old_str found 0 times". Use the `run_script` tool instead: read the file, do
-`t = raw.split('\r\n').join('\n')`, apply `replaceText(t, find, replace)`, convert back with
-`t.split('\n').join('\r\n')`, and `saveFile`. This pattern has been reliable all along.
-Python files can't be attached directly (use .txt/zip), and Tkinter can't run in this
-environment — verify by reading code + grep, not by launching the app.
-
 ## Architecture
 
 - **`shapes.py`** — `Shape` dataclass (one class for every shape type, JSON round-trips via
@@ -82,7 +64,7 @@ environment — verify by reading code + grep, not by launching the app.
 - **Cleanup** — sheet-size menu callbacks use `functools.partial` instead of a
   loop-variable-default lambda (cleared a PyCharm unresolved-reference warning).
 
-## The orthogonal routing scheme (most-iterated area — understand before touching)
+## The orthogonal routing scheme
 
 General rule: **any wire with a pinned end is owned by the auto-router** and rebuilt from
 endpoints + perpendicular staggered approaches on every component move, so wires always
@@ -104,8 +86,6 @@ enter/exit a pin **perpendicular to its edge** regardless of move direction.
   double-click to insert, orange segment handle slides a mid-segment; "Auto-Route Wire" resets.
 - Mux T/B pins ride the **slanted** trapezoid edge (computed from `inset` + pin's fractional x),
   not the bounding box, so `sel` sits on the edge.
-
-## Known minor limitation (user declined the fix — do NOT fix unless asked)
 
 **Unfilled rectangle/square interiors aren't clickable.** `handle_selection`
 (drawing_app.py ~line 1217) selects via `find_overlapping`, which only reports an unfilled
