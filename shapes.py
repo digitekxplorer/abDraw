@@ -170,6 +170,12 @@ class Shape:
     params: Optional[Dict] = None
 
     # Wire flags (apply to line/arrow/ortho_* shapes).
+    # Arrowhead placement, overriding the shape-type default:
+    #   None  -> default (arrow/ortho_arrow = end only; line/ortho_line = none)
+    #   'none' -> no arrowheads
+    #   'one'  -> arrowhead on the END only
+    #   'both' -> arrowheads on BOTH the start and end
+    arrow_ends: Optional[str] = None
     bus: bool = False                 # draw as a thick multi-bit bus
     slice_label: Optional[str] = None  # bit-slice tap text, e.g. "[7:0]"
     net_name: Optional[str] = None     # net label; same name = same net
@@ -222,6 +228,11 @@ class Shape:
     # manual override that honors waypoints even on a both-ends-pinned wire.
     user_routed: bool = False
 
+    # True for a non-electrical annotation/leader arrow: a plain diagonal line
+    # with an arrowhead that never binds to objects and is excluded from the
+    # netlist, DRC, and junction-dot detection.
+    annotation: bool = False
+
     def to_dict(self):
         """Convert shape to dictionary for saving"""
         data = asdict(self)
@@ -235,6 +246,7 @@ class Shape:
         data.setdefault('routing', 'h_first')
         data.setdefault('waypoints', [])
         data.setdefault('ports', [])
+        data.setdefault('arrow_ends', None)
         data.setdefault('bus', False)
         data.setdefault('slice_label', None)
         data.setdefault('net_name', None)
@@ -245,6 +257,7 @@ class Shape:
         data.setdefault('conn_name', None)
         data.setdefault('manual_route', False)
         data.setdefault('user_routed', False)
+        data.setdefault('annotation', False)
         return cls(**data)
 
     def get_bounds(self):
