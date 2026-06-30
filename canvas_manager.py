@@ -206,7 +206,7 @@ class CanvasManager:
         # An off-page connector is a plain terminal — no staggered approach.
         # Only the block/mux end of the wire fans into channels; this removes
         # the duplicate corners and stub artifacts at the connector side.
-        if target.shape_type == 'connector':
+        if target.shape_type in ('connector', 'connector_on'):
             return None
         res = self._resolve_pin(target, line_shape, endpoint)
         if res is None:
@@ -292,7 +292,7 @@ class CanvasManager:
             return False
         target = next((s for s in self.shapes
                        if s.shape_id == conn['target_id']), None)
-        if target is None or target.shape_type == 'connector':
+        if target is None or target.shape_type in ('connector', 'connector_on'):
             return False
         return bool(getattr(target, 'ports', None))
 
@@ -349,6 +349,18 @@ class CanvasManager:
             self.redraw_junctions()
             self.record_state()
 
+    def wire_arrow(self, shape):
+        """Tk arrow constant for a wire, honoring an explicit arrow_ends
+        override and falling back to the shape-type default."""
+        mode = getattr(shape, 'arrow_ends', None)
+        if mode == 'none':
+            return tk.NONE
+        if mode == 'one':
+            return tk.LAST
+        if mode == 'both':
+            return tk.BOTH
+        return tk.LAST if shape.shape_type in ("arrow", "ortho_arrow") else tk.NONE
+
     def draw_shape(self, shape):
         canvas = self.app.canvas
 
@@ -357,17 +369,11 @@ class CanvasManager:
         lw = shape.width + 3 if is_bus else shape.width
         arsh = (20, 24, 8) if is_bus else (16, 20, 6)
 
-        if shape.shape_type == "line":
-            shape.canvas_id = canvas.create_line(
-                shape.x1, shape.y1, shape.x2, shape.y2,
-                fill=shape.color, width=lw, tags="shape"
-            )
-
-        elif shape.shape_type == "arrow":
+        if shape.shape_type in ("line", "arrow"):
             shape.canvas_id = canvas.create_line(
                 shape.x1, shape.y1, shape.x2, shape.y2,
                 fill=shape.color, width=lw,
-                arrow=tk.LAST, arrowshape=arsh, tags="shape"
+                arrow=self.wire_arrow(shape), arrowshape=arsh, tags="shape"
             )
 
         elif shape.shape_type in ("ortho_line", "ortho_arrow"):
@@ -383,9 +389,8 @@ class CanvasManager:
                 dedup.append(list(dedup[-1]))
             flat = [c for pt in dedup for c in pt]
             kw = dict(fill=shape.color, width=lw,
-                      tags="shape", joinstyle=tk.MITER)
-            if shape.shape_type == "ortho_arrow":
-                kw.update(arrow=tk.LAST, arrowshape=arsh)
+                      tags="shape", joinstyle=tk.MITER,
+                      arrow=self.wire_arrow(shape), arrowshape=arsh)
             shape.canvas_id = canvas.create_line(*flat, **kw)
 
         elif shape.shape_type in ["rectangle", "square", "register", "adder"]:
@@ -425,16 +430,41 @@ class CanvasManager:
             cy = (shape.y1 + shape.y2) / 2
             name = getattr(shape, "conn_name", None) or "?"
             canvas.create_text(cx, cy, text=name, font=("Arial", 11, "bold"),
-                               fill=shape.color, anchor=tk.CENTER,
+                               fill=self.label_color_for(shape), anchor=tk.CENTER,
+                               tags=("port", self.ports_tag(shape)))
+        elif shape.shape_type == "connector_on":
+            shape.canvas_id = canvas.create_oval(
+                shape.x1, shape.y1, shape.x2, shape.y2,
+                outline=shape.color, width=max(2, shape.width),
+                fill=shape.fill_color or "white", tags="shape"
+            )
+            # Inner concentric ring distinguishes the on-page connector from
+            # the single-ring off-page one.
+            inset = 4
+            canvas.create_oval(
+                shape.x1 + inset, shape.y1 + inset,
+                shape.x2 - inset, shape.y2 - inset,
+                outline=shape.color, width=max(1, shape.width - 1),
+                tags=("port", self.ports_tag(shape))
+            )
+            cx = (shape.x1 + shape.x2) / 2
+            cy = (shape.y1 + shape.y2) / 2
+            name = getattr(shape, "conn_name", None) or "?"
+            canvas.create_text(cx, cy, text=name, font=("Arial", 10, "bold"),
+                               fill=self.label_color_for(shape), anchor=tk.CENTER,
                                tags=("port", self.ports_tag(shape)))
         elif shape.shape_type == "text":
             font_weight = "bold" if shape.font_bold else "normal"
             font_slant = "italic" if shape.font_italic else "roman"
             font = (shape.font_family, shape.font_size, font_weight, font_slant)
+            align = getattr(shape, "text_align", "left") or "left"
+            anchor = {"left": tk.NW, "center": tk.N, "right": tk.NE}.get(align, tk.NW)
+            justify = {"left": tk.LEFT, "center": tk.CENTER,
+                       "right": tk.RIGHT}.get(align, tk.LEFT)
             shape.canvas_id = canvas.create_text(
                 shape.x1, shape.y1,
                 text=shape.text, font=font, fill=shape.color,
-                anchor=tk.NW, tags="shape"
+                anchor=anchor, justify=justify, tags="shape"
             )
 
         if shape.label and shape.shape_type != "text":
@@ -564,12 +594,29 @@ class CanvasManager:
                                    tags=("deco", tag, "net_label",
                                          self.netlabel_tag(shape)))
 
+    def label_color_for(self, shape):
+        """Text color for interior pin names / glyphs that contrasts with
+        the shape's fill, so labels stay readable on a dark fill."""
+        fill = getattr(shape, "fill_color", None)
+        # Connectors default to a white fill when none is set.
+        if not fill and shape.shape_type in ("connector", "connector_on"):
+            fill = "white"
+        if not fill:
+            return "#333333"
+        try:
+            r, g, b = self.app.canvas.winfo_rgb(fill)
+        except Exception:
+            return "#333333"
+        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 65535.0
+        return "#333333" if lum >= 0.55 else "#f0f0f0"
+
     def draw_ports(self, shape):
         """Draw a pin stub + dot + name label for every named port."""
         if not getattr(shape, "ports", None):
             return
         canvas = self.app.canvas
         tag = self.ports_tag(shape)
+        lbl_col = self.label_color_for(shape)
         for p in shape.ports:
             px, py = shape.port_anchor(p['name'])   # edge anchor (wire attaches here)
             side = p.get('side', 'L')
@@ -588,7 +635,7 @@ class CanvasManager:
                                fill=shape.color, outline=shape.color, tags=("port", tag))
             if not p.get('hide_label'):
                 canvas.create_text(lx, ly, text=p['name'], font=("Arial", 8),
-                                   fill="#333333", anchor=anch, tags=("port", tag, "port_label"))
+                                   fill=lbl_col, anchor=anch, tags=("port", tag, "port_label"))
 
             # Clock-edge triangle on a pin literally named 'clk'.
             if p['name'].lower() == 'clk':
@@ -613,7 +660,7 @@ class CanvasManager:
         cy = (shape.y1 + shape.y2) / 2
         if shape.shape_type == "adder":
             canvas.create_text(cx, cy, text="+", font=("Arial", 18, "bold"),
-                               fill=shape.color, anchor=tk.CENTER, tags=("port", tag))
+                               fill=self.label_color_for(shape), anchor=tk.CENTER, tags=("port", tag))
 
     def flip_routing(self, shape):
         """Toggle h_first / v_first routing on an ortho line."""
@@ -890,7 +937,8 @@ class CanvasManager:
 
         for si, sname, shapes in self._sheet_shapes():
             blocks = [s for s in shapes if s.shape_type not in LINE_TYPES]
-            wires = [s for s in shapes if s.shape_type in LINE_TYPES]
+            wires = [s for s in shapes if s.shape_type in LINE_TYPES
+                     and not getattr(s, 'annotation', False)]
 
             for b in blocks:
                 for p in (getattr(b, 'ports', None) or []):
@@ -899,6 +947,9 @@ class CanvasManager:
                     pin_nodes[pk] = (sname, self._block_label(b), p['name'])
                 if b.shape_type == 'connector' and getattr(b, 'conn_name', None):
                     union(f"P:{si}:{b.shape_id}:io", f"K:{b.conn_name}")
+                if b.shape_type == 'connector_on' and getattr(b, 'conn_name', None):
+                    # On-page connector: scope the net key to THIS sheet only.
+                    union(f"P:{si}:{b.shape_id}:io", f"K:{si}:{b.conn_name}")
 
             raw = {}
             for w in wires:
@@ -1171,7 +1222,8 @@ class CanvasManager:
         wire's interior segment (a T-junction)."""
         if shapes is None:
             shapes = self.shapes
-        wires = [s for s in shapes if s.shape_type in LINE_TYPES]
+        wires = [s for s in shapes if s.shape_type in LINE_TYPES
+                 and not getattr(s, 'annotation', False)]
         polys = {s.shape_id: self.wire_polyline(s) for s in wires}
 
         def key(pt):
@@ -1225,9 +1277,10 @@ class CanvasManager:
         if shape.shape_type in LINE_TYPES and net:
             matches = [s for s in self.shapes
                        if s.shape_type in LINE_TYPES and getattr(s, 'net_name', None) == net]
-        elif shape.shape_type == 'connector' and conn:
+        elif shape.shape_type in ('connector', 'connector_on') and conn:
             matches = [s for s in self.shapes
-                       if s.shape_type == 'connector' and getattr(s, 'conn_name', None) == conn]
+                       if s.shape_type == shape.shape_type
+                       and getattr(s, 'conn_name', None) == conn]
         else:
             return 0
         for s in matches:
