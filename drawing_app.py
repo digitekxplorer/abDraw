@@ -7,10 +7,18 @@ Main application class for abDraw
 import tkinter as tk
 from tkinter import ttk, colorchooser, messagebox, simpledialog
 import math
+from functools import partial
 
 from shapes import Shape, make_primitive_ports, set_port_grid, STANDARD_PINS
 from file_manager import FileManager
 from canvas_manager import CanvasManager, LINE_TYPES
+
+
+# Shape types that can take an interior fill color.
+FILLABLE_TYPES = {
+    "rectangle", "square", "circle", "ellipse", "triangle",
+    "mux", "register", "adder", "connector", "connector_on",
+}
 
 
 # Standard sheet-size presets (canvas pixel units; not DPI-calibrated).
@@ -148,6 +156,13 @@ class DrawingApp:
         edit_menu.add_command(label="Special Pins...", command=self.special_pins_of_selected, accelerator="Ctrl+Shift+P")
         edit_menu.add_separator()
         edit_menu.add_command(label="Toggle Bus (wire)", command=self.toggle_bus_of_selected, accelerator="Ctrl+B")
+        arrow_menu = tk.Menu(edit_menu, tearoff=0)
+        arrow_menu.add_command(label="No Arrowheads", command=lambda: self.set_wire_arrows('none'))
+        arrow_menu.add_command(label="One Arrowhead (end)", command=lambda: self.set_wire_arrows('one'))
+        arrow_menu.add_command(label="Two Arrowheads (both ends)", command=lambda: self.set_wire_arrows('both'))
+        arrow_menu.add_separator()
+        arrow_menu.add_command(label="Cycle Arrowheads", command=self.cycle_wire_arrows, accelerator="Ctrl+Shift+A")
+        edit_menu.add_cascade(label="Wire Arrowheads", menu=arrow_menu)
         edit_menu.add_command(label="Bit-Slice Label...", command=self.edit_slice_label_of_selected)
         edit_menu.add_command(label="Bit-Slice Label Distance...", command=self.ui_set_slice_label_distance)
         edit_menu.add_command(label="Net Label...", command=self.edit_net_label_of_selected)
@@ -200,7 +215,7 @@ class DrawingApp:
         view_menu.add_cascade(label="Sheet Size", menu=sheet_size_menu)
         for label, w, h in SHEET_SIZE_PRESETS:
             sheet_size_menu.add_command(
-                label=label, command=lambda w=w, h=h: self.ui_set_sheet_size(w, h))
+                label=label, command=partial(self.ui_set_sheet_size, w, h))
         sheet_size_menu.add_separator()
         sheet_size_menu.add_command(label="Custom...", command=self.ui_custom_sheet_size)
 
@@ -278,6 +293,8 @@ class DrawingApp:
             ("Select",      "select",      "🖱️",  "Select and move shapes"),
             ("Line",        "line",        "📏",  "Draw line"),
             ("Arrow",       "arrow",       "➡️",  "Draw arrow"),
+            ("Note Arrow",  "annotation_arrow", "↗",
+             "Annotation arrow — diagonal, non-electrical, never binds to objects"),
             ("Ortho Line",  "ortho_line",  "⌐",
              "Draw line with 90° turns — left-click to add turns, right-click or Enter to finish, Esc to cancel"),
             ("Ortho Arrow", "ortho_arrow", "⌐→",
@@ -291,6 +308,7 @@ class DrawingApp:
             ("Register",    "register",    "⊐",   "Draw register/flip-flop with clock edge"),
             ("Adder",       "adder",       "✚",   "Draw adder block"),
             ("Off-Page",    "connector",   "◯→",  "Off-page connector — click to place, then name it"),
+            ("On-Page",     "connector_on","◎",   "On-page connector — same name links nodes on THIS sheet"),
             ("Text",        "text",        "T",   "Add text label"),
         ]
 
@@ -307,6 +325,12 @@ class DrawingApp:
                                    command=self.choose_color, width=3, font=("Arial", 16))
         self.color_btn.pack(side=tk.LEFT, padx=2)
         ToolTip(self.color_btn, "Choose color")
+
+        self.fill_btn = tk.Button(toolbar, text="▣", command=self.choose_fill,
+                                  width=3, font=("Arial", 16))
+        self.fill_btn.pack(side=tk.LEFT, padx=2)
+        self._update_fill_btn()
+        ToolTip(self.fill_btn, "Fill color (no fill / pick a color) — applies to the selected shape")
 
         ttk.Label(toolbar, text="Width:").pack(side=tk.LEFT, padx=5)
         self.width_var = tk.IntVar(value=2)
@@ -344,6 +368,7 @@ class DrawingApp:
         self.root.bind("<Control-Shift-P>", lambda e: self.special_pins_of_selected())
         self.root.bind("<Control-b>", lambda e: self.toggle_bus_of_selected())
         self.root.bind("<Control-r>", lambda e: self.rotate_connector_of_selected())
+        self.root.bind("<Control-Shift-A>", lambda e: self.cycle_wire_arrows())
         self.root.bind("<Escape>", lambda e: self.deselect_all())
         self.root.bind("<Return>", lambda e: self._finish_ortho_if_active())
         self.root.bind("<r>", lambda e: self._flip_ortho_routing())
@@ -387,6 +412,46 @@ class DrawingApp:
 
     def update_width(self):
         self.line_width = self.width_var.get()
+
+    def _update_fill_btn(self):
+        """Reflect the current fill on the toolbar swatch."""
+        if self.current_fill:
+            self.fill_btn.config(bg=self.current_fill, text="▣")
+        else:
+            self.fill_btn.config(bg="#f0f0f0", text="⊘")  # no-fill
+
+    def choose_fill(self):
+        """Pop a small menu: No Fill or pick a color. Applies to the
+        selected fillable shape (if any) and becomes the default for new
+        shapes."""
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="No Fill", command=lambda: self.set_fill(""))
+        menu.add_command(label="Choose Color…", command=self._pick_fill_color)
+        try:
+            x = self.fill_btn.winfo_rootx()
+            y = self.fill_btn.winfo_rooty() + self.fill_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _pick_fill_color(self):
+        init = self.current_fill or "#ffffff"
+        color = colorchooser.askcolor(initialcolor=init, title="Fill Color")[1]
+        if color:
+            self.set_fill(color)
+
+    def set_fill(self, color):
+        """Set the active fill ("" = no fill) and apply it to the selected
+        fillable shape, if one is selected."""
+        self.current_fill = color or ""
+        self._update_fill_btn()
+        sel = self.canvas_manager.selected_shape
+        if sel and sel.shape_type in FILLABLE_TYPES:
+            self.canvas_manager.record_state()
+            sel.fill_color = color or None
+            self.canvas_manager.redraw_shape(sel)
+            self.status_bar.config(
+                text=("Fill: none" if not color else f"Fill: {color}"))
 
     # ------------------------------------------------------------------
     # Ortho drawing helpers
@@ -468,7 +533,7 @@ class DrawingApp:
     def on_mouse_move(self, event):
         """Update ortho preview on plain mouse movement (no button held)."""
         if self.ortho_in_progress:
-            x, y = event.x, event.y
+            x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             if self.snap_to_grid:
                 x, y = self.snap_point(x, y)
             self._update_ortho_preview(x, y)
@@ -476,13 +541,15 @@ class DrawingApp:
     def on_right_click(self, event):
         """Right-click: finalize an in-progress ortho line at the cursor position."""
         if self.ortho_in_progress:
-            x, y = event.x, event.y
+            x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
             if self.snap_to_grid:
                 x, y = self.snap_point(x, y)
             self._finalize_ortho_line(x, y)
 
     def on_press(self, event):
-        x, y = event.x, event.y
+        # Convert viewport pixels to canvas coords so hit-testing and
+        # placement stay correct when the sheet is scrolled.
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
         # --- Ortho click-to-place drawing ---
         if self.current_tool in ("ortho_line", "ortho_arrow"):
@@ -649,7 +716,9 @@ class DrawingApp:
         return next((s for s in self.canvas_manager.shapes if s.shape_id == shape_id), None)
 
     def on_drag(self, event):
-        x, y = event.x, event.y
+        # Convert viewport pixels to canvas coords so hit-testing and
+        # placement stay correct when the sheet is scrolled.
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
         # Ortho preview during drag (button held after placing a point)
         if self.ortho_in_progress:
@@ -818,10 +887,16 @@ class DrawingApp:
 
             # Regular line endpoint drag
             if self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape:
-                snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
-                    x, y, self.canvas_manager.selected_shape)
-                if not snap_shape and self.snap_to_grid:
-                    snap_x, snap_y = self.snap_point(x, y)
+                _sel = self.canvas_manager.selected_shape
+                if getattr(_sel, 'annotation', False):
+                    # Annotation arrows are free: grid snap only, never bind.
+                    snap_x, snap_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
+                    snap_shape = None
+                else:
+                    snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
+                        x, y, self.canvas_manager.selected_shape)
+                    if not snap_shape and self.snap_to_grid:
+                        snap_x, snap_y = self.snap_point(x, y)
                 if self.canvas_manager.editing_endpoint == "start":
                     self.canvas_manager.selected_shape.x1 = snap_x
                     self.canvas_manager.selected_shape.y1 = snap_y
@@ -875,7 +950,9 @@ class DrawingApp:
             )
 
     def on_release(self, event):
-        x, y = event.x, event.y
+        # Convert viewport pixels to canvas coords so hit-testing and
+        # placement stay correct when the sheet is scrolled.
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
         # Ortho lines finalize via right-click or Enter — ignore release
         if self.current_tool in ("ortho_line", "ortho_arrow") and self.ortho_in_progress:
@@ -950,6 +1027,16 @@ class DrawingApp:
                 return
 
             if self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape:
+                _sel = self.canvas_manager.selected_shape
+                if getattr(_sel, 'annotation', False):
+                    # Annotation arrows never bind; drop any stale connection.
+                    _sel.connections = [c for c in _sel.connections
+                                        if c.get('endpoint') != self.canvas_manager.editing_endpoint]
+                    self.canvas.delete("snap_indicator")
+                    self.canvas_manager.editing_endpoint = None
+                    self.canvas_manager.record_state()
+                    self.file_manager.mark_modified()
+                    return
                 snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
                     x, y, self.canvas_manager.selected_shape)
                 if not snap_shape and self.snap_to_grid:
@@ -1022,6 +1109,8 @@ class DrawingApp:
     def _auto_connect_endpoints(self, line_shape):
         """When a wire is first drawn, bind either endpoint that lands on a
         shape/pin so the connection exists immediately — no follow-up drag."""
+        if getattr(line_shape, 'annotation', False):
+            return False  # annotation arrows are non-electrical: never bind
         connected = []
         for endpoint in ("start", "end"):
             ex = line_shape.x1 if endpoint == "start" else line_shape.x2
@@ -1060,7 +1149,9 @@ class DrawingApp:
         Ortho lines are finalized via right-click or Enter — not double-click."""
         if self.current_tool != "select":
             return
-        x, y = event.x, event.y
+        # Convert viewport pixels to canvas coords so hit-testing and
+        # placement stay correct when the sheet is scrolled.
+        x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
         items = self.canvas.find_overlapping(x - 5, y - 5, x + 5, y + 5)
         for item in reversed(items):
             if "shape" in self.canvas.gettags(item):
@@ -1119,7 +1210,7 @@ class DrawingApp:
         if self.current_tool == "line":
             return self.canvas.create_line(x1, y1, x2, y2,
                                            fill=self.current_color, width=self.line_width, dash=(4, 4))
-        elif self.current_tool == "arrow":
+        elif self.current_tool in ("arrow", "annotation_arrow"):
             return self.canvas.create_line(x1, y1, x2, y2, fill=self.current_color,
                                            width=self.line_width, arrow=tk.LAST,
                                            arrowshape=(16, 20, 6), dash=(4, 4))
@@ -1151,7 +1242,7 @@ class DrawingApp:
             cx = (x1 + x2) / 2
             return self.canvas.create_polygon(cx, y1, x1, y2, x2, y2, outline=self.current_color,
                                               fill="", width=self.line_width, dash=(4, 4))
-        elif self.current_tool == "connector":
+        elif self.current_tool in ("connector", "connector_on"):
             r = 17
             return self.canvas.create_oval(x1 - r, y1 - r, x1 + r, y1 + r,
                                            outline=self.current_color,
@@ -1160,19 +1251,26 @@ class DrawingApp:
 
     def create_shape(self, x1, y1, x2, y2):
         """Create a new non-ortho shape from a drag gesture."""
-        if self.current_tool == "connector":
+        if self.current_tool in ("connector", "connector_on"):
             r = 17
-            name = simpledialog.askstring(
-                "Off-Page Connector",
-                "Connector name (two connectors sharing a name link the same "
-                "node, including across sheets):", parent=self.root)
+            on_page = self.current_tool == "connector_on"
+            if on_page:
+                name = simpledialog.askstring(
+                    "On-Page Connector",
+                    "Connector name (two on-page connectors sharing a name link "
+                    "the same node on THIS sheet):", parent=self.root)
+            else:
+                name = simpledialog.askstring(
+                    "Off-Page Connector",
+                    "Connector name (two connectors sharing a name link the same "
+                    "node, including across sheets):", parent=self.root)
             if not name or not name.strip():
                 return None
             ports = [{'name': 'io', 'side': 'L', 'direction': 'inout',
                       'hide_label': True}]
             return Shape(x1=x1 - r, y1=y1 - r, x2=x1 + r, y2=y1 + r,
                          color=self.current_color, width=self.line_width,
-                         shape_type="connector",
+                         shape_type="connector_on" if on_page else "connector",
                          fill_color=self.current_fill or "white",
                          ports=ports, conn_name=name.strip())
         if abs(x2 - x1) < 3 and abs(y2 - y1) < 3:
@@ -1202,6 +1300,11 @@ class DrawingApp:
                          color=self.current_color, width=self.line_width,
                          shape_type=self.current_tool, fill_color=self.current_fill,
                          ports=ports, params=params)
+
+        if self.current_tool == "annotation_arrow":
+            return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
+                         color=self.current_color, width=self.line_width,
+                         shape_type="arrow", annotation=True)
 
         return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
                      color=self.current_color, width=self.line_width,
@@ -1261,6 +1364,10 @@ class DrawingApp:
                             self.status_bar.config(
                                 text=f"Selected off-page connector "
                                      f"'{shape.conn_name}' — same name = same node")
+                        elif shape.shape_type == "connector_on":
+                            self.status_bar.config(
+                                text=f"Selected on-page connector "
+                                     f"'{shape.conn_name}' — same name = same node on this sheet")
                         else:
                             self.status_bar.config(text=f"Selected {shape.shape_type}")
                         return
@@ -1567,7 +1674,8 @@ class DrawingApp:
                           font_family=dialog.result['font_family'],
                           font_size=dialog.result['font_size'],
                           font_bold=dialog.result['font_bold'],
-                          font_italic=dialog.result['font_italic'])
+                          font_italic=dialog.result['font_italic'],
+                          text_align=dialog.result['text_align'])
             self.canvas_manager.add_shape(shape)
             self.status_bar.config(text="Text added")
 
@@ -1575,13 +1683,15 @@ class DrawingApp:
         dialog = TextInputDialog(self.root, "Edit Text", shape.x1, shape.y1,
                                  initial_text=shape.text, initial_font=shape.font_family,
                                  initial_size=shape.font_size, initial_bold=shape.font_bold,
-                                 initial_italic=shape.font_italic)
+                                 initial_italic=shape.font_italic,
+                                 initial_align=getattr(shape, 'text_align', 'left'))
         if dialog.result:
             shape.text = dialog.result['text']
             shape.font_family = dialog.result['font_family']
             shape.font_size = dialog.result['font_size']
             shape.font_bold = dialog.result['font_bold']
             shape.font_italic = dialog.result['font_italic']
+            shape.text_align = dialog.result['text_align']
             shape.color = self.current_color
             self.canvas_manager.redraw_shape(shape)
             self.canvas_manager.record_state()
@@ -1674,6 +1784,34 @@ class DrawingApp:
         self.canvas_manager.record_state()
         self.status_bar.config(text=f"Special pins updated ({len(shape.ports)} pin(s))")
 
+    def set_wire_arrows(self, mode):
+        """Set arrowhead placement on the selected wire: 'none', 'one', 'both'."""
+        shape = self.canvas_manager.selected_shape
+        if not shape or shape.shape_type not in LINE_TYPES:
+            messagebox.showinfo("Select a Wire",
+                                "Select a wire (line/arrow) first to set arrowheads.")
+            return
+        shape.arrow_ends = mode
+        self.canvas_manager.redraw_shape(shape)
+        self.canvas_manager.record_state()
+        word = {'none': 'no arrowheads',
+                'one': 'one arrowhead',
+                'both': 'two arrowheads'}[mode]
+        self.status_bar.config(text=f"Wire set to {word}")
+
+    def cycle_wire_arrows(self):
+        """Cycle the selected wire's arrowheads: none -> one -> both -> none."""
+        shape = self.canvas_manager.selected_shape
+        if not shape or shape.shape_type not in LINE_TYPES:
+            messagebox.showinfo("Select a Wire",
+                                "Select a wire (line/arrow) first to set arrowheads.")
+            return
+        cur = getattr(shape, 'arrow_ends', None)
+        if cur is None:  # fall back to the shape-type default
+            cur = 'one' if shape.shape_type in ("arrow", "ortho_arrow") else 'none'
+        nxt = {'none': 'one', 'one': 'both', 'both': 'none'}[cur]
+        self.set_wire_arrows(nxt)
+
     def toggle_bus_of_selected(self):
         shape = self.canvas_manager.selected_shape
         if not shape or shape.shape_type not in LINE_TYPES:
@@ -1758,7 +1896,7 @@ class DrawingApp:
 
     def rotate_connector_of_selected(self):
         shape = self.canvas_manager.selected_shape
-        if not shape or shape.shape_type != "connector" or not shape.ports:
+        if not shape or shape.shape_type not in ("connector", "connector_on") or not shape.ports:
             messagebox.showinfo("Select a Connector",
                                 "Select an off-page connector first to rotate "
                                 "its attach side.")
@@ -1815,7 +1953,9 @@ class LabelInputDialog:
         ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
         ttk.Button(bf, text="Remove Label", command=self.remove_clicked).pack(side=tk.LEFT)
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
+        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
+        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
         self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
         parent.wait_window(self.dialog)
 
@@ -1865,7 +2005,9 @@ class SheetSizeDialog:
         ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
         ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
 
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
+        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
+        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
         self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
         parent.wait_window(self.dialog)
 
@@ -1902,6 +2044,7 @@ class PortEditorDialog:
         ttk.Label(f, text="Pins (name — side):").pack(anchor=tk.W)
         self.listbox = tk.Listbox(f, height=10)
         self.listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
+        self.listbox.bind("<Double-Button-1>", lambda e: self.rename_port())
 
         addf = ttk.Frame(f)
         addf.pack(fill=tk.X)
@@ -1916,7 +2059,12 @@ class PortEditorDialog:
                      values=[s[0] for s in self.SIDES]).pack(side=tk.LEFT, padx=4)
         ttk.Button(addf, text="Add", command=self.add_port).pack(side=tk.LEFT, padx=2)
 
-        ttk.Button(f, text="Remove Selected", command=self.remove_port).pack(anchor=tk.W, pady=6)
+        editf = ttk.Frame(f)
+        editf.pack(fill=tk.X, pady=6)
+        ttk.Button(editf, text="Rename", command=self.rename_port).pack(side=tk.LEFT)
+        ttk.Button(editf, text="Move Up", command=lambda: self.move_port(-1)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(editf, text="Move Down", command=lambda: self.move_port(1)).pack(side=tk.LEFT)
+        ttk.Button(editf, text="Remove", command=self.remove_port).pack(side=tk.RIGHT)
 
         bf = ttk.Frame(f)
         bf.pack(fill=tk.X, side=tk.BOTTOM)
@@ -1949,6 +2097,47 @@ class PortEditorDialog:
                            'direction': 'inout'})
         self.name_var.set("")
         self.refresh()
+
+    def rename_port(self):
+        sel = self.listbox.curselection()
+        if not sel:
+            messagebox.showinfo("No Selection", "Select a pin to rename.")
+            return
+        i = sel[0]
+        old = self.ports[i]['name']
+        new = simpledialog.askstring("Rename Pin", "New pin name:",
+                                     initialvalue=old, parent=self.dialog)
+        if new is None:
+            return
+        new = new.strip()
+        if not new or new == old:
+            return
+        if any(j != i and p['name'] == new for j, p in enumerate(self.ports)):
+            messagebox.showinfo("Duplicate", f"A pin named '{new}' already exists.")
+            return
+        self.ports[i]['name'] = new
+        self.refresh()
+        self.listbox.selection_set(i)
+
+    def move_port(self, delta):
+        """Move the selected pin up/down relative to other pins on its SAME edge."""
+        sel = self.listbox.curselection()
+        if not sel:
+            messagebox.showinfo("No Selection", "Select a pin to move.")
+            return
+        i = sel[0]
+        side = self.ports[i].get('side', 'L')
+        # Find the nearest pin on the same side in the move direction.
+        j = i + delta
+        while 0 <= j < len(self.ports):
+            if self.ports[j].get('side', 'L') == side:
+                break
+            j += delta
+        if not (0 <= j < len(self.ports)):
+            return  # already first/last on this edge
+        self.ports[i], self.ports[j] = self.ports[j], self.ports[i]
+        self.refresh()
+        self.listbox.selection_set(j)
 
     def remove_port(self):
         sel = self.listbox.curselection()
@@ -2014,17 +2203,19 @@ class SpecialPinsDialog:
 
 class TextInputDialog:
     def __init__(self, parent, title, x, y, initial_text="", initial_font="Arial",
-                 initial_size=12, initial_bold=False, initial_italic=False):
+                 initial_size=12, initial_bold=False, initial_italic=False,
+                 initial_align="left"):
         self.result = None
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(title)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        self.dialog.geometry("400x300")
+        self.dialog.geometry("420x350")
 
         f = ttk.Frame(self.dialog, padding=10)
         f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text="Text:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        ttk.Label(f, text="Text  (Enter = new line, Ctrl+Enter = OK):").grid(
+            row=0, column=0, columnspan=3, sticky=tk.W, pady=5)
 
         tf = ttk.Frame(f)
         tf.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
@@ -2055,11 +2246,21 @@ class TextInputDialog:
         self.font_italic = tk.BooleanVar(value=initial_italic)
         ttk.Checkbutton(sf, text="Italic", variable=self.font_italic).pack(side=tk.LEFT, padx=5)
 
+        af = ttk.Frame(f)
+        af.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=5)
+        ttk.Label(af, text="Align:").pack(side=tk.LEFT, padx=(0, 6))
+        self.text_align = tk.StringVar(value=initial_align or "left")
+        for _lbl, _val in (("Left", "left"), ("Center", "center"), ("Right", "right")):
+            ttk.Radiobutton(af, text=_lbl, value=_val,
+                            variable=self.text_align).pack(side=tk.LEFT, padx=4)
+
         bf = ttk.Frame(self.dialog, padding=10)
         bf.pack(fill=tk.X)
         ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
+        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
+        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
         self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
         parent.wait_window(self.dialog)
 
@@ -2068,7 +2269,8 @@ class TextInputDialog:
         if text:
             self.result = {'text': text, 'font_family': self.font_family.get(),
                            'font_size': self.font_size.get(), 'font_bold': self.font_bold.get(),
-                           'font_italic': self.font_italic.get()}
+                           'font_italic': self.font_italic.get(),
+                           'text_align': self.text_align.get()}
         self.dialog.destroy()
 
     def cancel_clicked(self):
