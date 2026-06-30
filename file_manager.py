@@ -224,11 +224,14 @@ class FileManager:
                 "center": "mm", "nw": "la", "ne": "ra",
                 "sw": "ld", "se": "rd"}.get(tk_anchor, "la")
 
-    def _text(self, draw, x, y, s, font, fill, anchor="la"):
+    def _text(self, draw, x, y, s, font, fill, anchor="la", align="left"):
         try:
-            draw.text((x, y), str(s), font=font, fill=fill, anchor=anchor)
+            draw.text((x, y), str(s), font=font, fill=fill, anchor=anchor, align=align)
         except Exception:
-            draw.text((x, y), str(s), font=font, fill=fill)
+            try:
+                draw.text((x, y), str(s), font=font, fill=fill, anchor=anchor)
+            except Exception:
+                draw.text((x, y), str(s), font=font, fill=fill)
 
     def render_sheet_image(self, index):
         """Render one sheet to a white PIL image, reusing the canvas_manager
@@ -359,15 +362,30 @@ class FileManager:
                          fill=(s.fill_color or "white"), width=max(2, w))
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
-                       self._font(12, bold=True), col, self._anchor("center"))
+                       self._font(12, bold=True),
+                       self.app.canvas_manager.label_color_for(s),
+                       self._anchor("center"))
+        elif s.shape_type == "connector_on":
+            draw.ellipse([T(s.x1, s.y1), T(s.x2, s.y2)], outline=col,
+                         fill=(s.fill_color or "white"), width=max(2, w))
+            ins = 4
+            draw.ellipse([T(s.x1 + ins, s.y1 + ins), T(s.x2 - ins, s.y2 - ins)],
+                         outline=col, width=max(1, w - 1))
+            cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
+            self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
+                       self._font(11, bold=True),
+                       self.app.canvas_manager.label_color_for(s),
+                       self._anchor("center"))
         elif s.shape_type == "text":
             tx, ty = T(s.x1, s.y1)
             size = getattr(s, 'font_size', 12) or 12
+            align = getattr(s, 'text_align', 'left') or 'left'
+            tk_anch = {"left": "nw", "center": "n", "right": "ne"}.get(align, "nw")
             self._text(draw, tx, ty, getattr(s, 'text', '') or '',
                        self._font(int(size), bold=getattr(s, 'font_bold', False)),
-                       col, self._anchor("nw"))
+                       col, self._anchor(tk_anch), align=align)
         # Block title label (drawn centered like the canvas label).
-        if getattr(s, 'label', None) and s.shape_type not in ("text", "connector"):
+        if getattr(s, 'label', None) and s.shape_type not in ("text", "connector", "connector_on"):
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, s.label, self._font(11, bold=True),
                        col, self._anchor("center"))
@@ -375,6 +393,7 @@ class FileManager:
     def _img_ports(self, draw, s, T):
         """Draw pin dots, labels, clock triangles, adder glyph to the image."""
         import math
+        lbl_col = self.app.canvas_manager.label_color_for(s)
         for p in (getattr(s, 'ports', None) or []):
             px, py = s.port_anchor(p['name'])
             side = p.get('side', 'L')
@@ -394,7 +413,7 @@ class FileManager:
                     lx, ly, anch = px, py - off, "s"
                 tx, ty = T(lx, ly)
                 self._text(draw, tx, ty, p['name'], self._font(9),
-                           "#333333", self._anchor(anch))
+                           lbl_col, self._anchor(anch))
             if p['name'].lower() == 'clk':
                 tri = 7
                 if side == 'L':
@@ -410,7 +429,7 @@ class FileManager:
         if s.shape_type == "adder":
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, "+", self._font(18, bold=True),
-                       s.color, self._anchor("center"))
+                       lbl_col, self._anchor("center"))
 
     def _img_wire(self, draw, cm, s, T):
         """Draw a wire (straight/ortho), bus width, arrowhead, slice tap, net label."""
@@ -422,43 +441,49 @@ class FileManager:
         w = max(1, int(s.width + (3 if bus else 0)))
         pts = [T(px, py) for px, py in poly]
         draw.line(pts, fill=s.color, width=w, joint="curve")
-        # Arrowhead on arrow/ortho_arrow.
-        if s.shape_type in ("arrow", "ortho_arrow"):
-            (ax, ay), (bx, by) = poly[-2], poly[-1]
+        # Arrowheads, honoring an explicit arrow_ends override.
+        mode = getattr(s, 'arrow_ends', None)
+        if mode is None:
+            mode = 'one' if s.shape_type in ("arrow", "ortho_arrow") else 'none'
+        size = 20 if bus else 16
+
+        def _arrowhead(tip, base):
+            ax, ay = poly[base]
+            bx, by = poly[tip]
             ang = math.atan2(by - ay, bx - ax)
-            size = 20 if bus else 16
             h1 = (bx - size * math.cos(ang - math.pi / 6),
                   by - size * math.sin(ang - math.pi / 6))
             h2 = (bx - size * math.cos(ang + math.pi / 6),
                   by - size * math.sin(ang + math.pi / 6))
             draw.polygon([T(bx, by), T(*h1), T(*h2)], fill=s.color)
+
+        if mode in ("one", "both"):
+            _arrowhead(-1, -2)   # arrowhead at the end
+        if mode == "both":
+            _arrowhead(0, 1)     # arrowhead at the start
         # Bit-slice tap.
         label = getattr(s, 'slice_label', None)
         if label:
-            (x0, y0), (x1, y1) = poly[0], poly[1]
-            seg = math.hypot(x1 - x0, y1 - y0) or 1.0
-            ux, uy = (x1 - x0) / seg, (y1 - y0) / seg
-            d = min(22, seg * 0.5)
-            cx, cy = x0 + ux * d, y0 + uy * d
-            draw.line([T(cx - 7, cy + 7), T(cx + 7, cy - 7)],
-                      fill=s.color, width=max(1, int(s.width)))
-            tx, ty = T(cx - uy * 12, cy - 12)
-            self._text(draw, tx, ty, label, self._font(9), s.color, self._anchor("center"))
-        # Net label on the longest segment.
+            tap = cm.slice_tap_point(s)
+            if tap:
+                cx, cy, ux, uy = tap
+                draw.line([T(cx - 7, cy + 7), T(cx + 7, cy - 7)],
+                          fill=s.color, width=max(1, int(s.width)))
+                dx, dy = cm.slice_label_offset(s)
+                tx, ty = T(cx + dx, cy + dy)
+                self._text(draw, tx, ty, label, self._font(9), s.color,
+                           self._anchor("center"))
+        # Net label — honor the user's drag override (net_label_dx/dy) just as
+        # the canvas does, so exports match the on-screen position.
         net = getattr(s, 'net_name', None)
         if net:
-            best, blen = (poly[0], poly[1]), -1.0
-            for i in range(len(poly) - 1):
-                a, b = poly[i], poly[i + 1]
-                seglen = math.hypot(b[0] - a[0], b[1] - a[1])
-                if seglen > blen:
-                    blen, best = seglen, (a, b)
-            (ax, ay), (bx, by) = best
-            mx, my = (ax + bx) / 2, (ay + by) / 2
-            horiz = abs(bx - ax) >= abs(by - ay)
-            tx, ty = T(mx, my - 9) if horiz else T(mx + 6, my)
-            self._text(draw, tx, ty, net, self._font(9, italic=True),
-                       "#1f6fc2", self._anchor("s" if horiz else "w"))
+            base = cm.net_label_base_point(s)
+            if base:
+                mx, my, _ = base
+                dx, dy = cm.net_label_offset(s)
+                tx, ty = T(mx + dx, my + dy)
+                self._text(draw, tx, ty, net, self._font(9, italic=True),
+                           "#1f6fc2", self._anchor("center"))
 
     def _img_title_block(self, draw, page_w, page_h, index):
         import datetime
