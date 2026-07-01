@@ -97,4 +97,4 @@ python main.py
 
 ## License
 
-Add your chosen license here (e.g. MIT) as a `LICENSE` file.
+MIT License.
