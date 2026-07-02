@@ -233,6 +233,13 @@ class Shape:
     # netlist, DRC, and junction-dot detection.
     annotation: bool = False
 
+    # True to render a line/arrow dashed (legacy flag; superseded by dash_pattern).
+    dashed: bool = False
+
+    # Named dash style for a line/arrow: "" / "solid", "dashed", "fine",
+    # "long", "dotted", "dash-dot". See canvas_manager.DASH_PATTERNS.
+    dash_pattern: str = ""
+
     def to_dict(self):
         """Convert shape to dictionary for saving"""
         data = asdict(self)
@@ -258,6 +265,8 @@ class Shape:
         data.setdefault('manual_route', False)
         data.setdefault('user_routed', False)
         data.setdefault('annotation', False)
+        data.setdefault('dashed', False)
+        data.setdefault('dash_pattern', "")
         return cls(**data)
 
     def get_bounds(self):
