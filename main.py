@@ -12,6 +12,15 @@
 #              binds; excluded from netlist, DRC, junction dots)
 #            - Text alignment: left / center / right (canvas + export)
 #            - Fix: export now honors dragged net-label & bit-slice positions
+# 07/01/2026 - Group selection: marquee-drag to select multiple shapes,
+#              move them together (pinned wires stay coherent), and delete
+#              them as one undoable action
+#            - Fix: resize handles now follow a snapped move on release
+#            - Edit Pins: Add Range... bulk-adds numbered pins (io1..io16),
+#              optional zero-pad, skips duplicates; wider Edit Pins dialog
+#            - Note Line: non-electrical annotation line with a Line Style...
+#              picker (Solid / Dashed / Fine / Long / Dotted / Dash-dot + width),
+#              patterns render on canvas and in PNG/PDF export
 #
 # ============================================================================
 # File structure for your project:
