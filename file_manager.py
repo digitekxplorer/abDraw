@@ -431,6 +431,35 @@ class FileManager:
             self._text(draw, cx, cy, "+", self._font(18, bold=True),
                        lbl_col, self._anchor("center"))
 
+    @staticmethod
+    def _dashed_poly(draw, pts, fill, width, pattern):
+        """Stroke a polyline with a dash `pattern` (alternating on/off run
+        lengths), since Pillow has no native dash support."""
+        import math
+        if not pattern:
+            draw.line(pts, fill=fill, width=width, joint="curve")
+            return
+        idx, on, remain = 0, True, float(pattern[0])
+        for i in range(len(pts) - 1):
+            x0, y0 = pts[i]; x1, y1 = pts[i + 1]
+            seg = math.hypot(x1 - x0, y1 - y0)
+            if seg == 0:
+                continue
+            ux, uy = (x1 - x0) / seg, (y1 - y0) / seg
+            pos = 0.0
+            while pos < seg:
+                step = min(remain, seg - pos)
+                if on:
+                    draw.line([(x0 + ux * pos, y0 + uy * pos),
+                               (x0 + ux * (pos + step), y0 + uy * (pos + step))],
+                              fill=fill, width=width)
+                pos += step
+                remain -= step
+                if remain <= 1e-9:
+                    idx = (idx + 1) % len(pattern)
+                    on = not on
+                    remain = float(pattern[idx])
+
     def _img_wire(self, draw, cm, s, T):
         """Draw a wire (straight/ortho), bus width, arrowhead, slice tap, net label."""
         import math
@@ -440,7 +469,12 @@ class FileManager:
         bus = getattr(s, 'bus', False)
         w = max(1, int(s.width + (3 if bus else 0)))
         pts = [T(px, py) for px, py in poly]
-        draw.line(pts, fill=s.color, width=w, joint="curve")
+        from canvas_manager import dash_tuple
+        pat = dash_tuple(s)
+        if pat:
+            self._dashed_poly(draw, pts, s.color, w, pat)
+        else:
+            draw.line(pts, fill=s.color, width=w, joint="curve")
         # Arrowheads, honoring an explicit arrow_ends override.
         mode = getattr(s, 'arrow_ends', None)
         if mode is None:
