@@ -12,6 +12,30 @@ from shapes import Shape, Connection, PORT_OUTWARD, port_lead_length
 # All shape types that behave as connectable line segments
 LINE_TYPES = ("line", "arrow", "ortho_line", "ortho_arrow")
 
+# Named dash styles (Tk dash tuples; also used for PNG/PDF export). "solid" = no dash.
+DASH_PATTERNS = {
+    "solid":    (),
+    "dashed":   (6, 4),
+    "fine":     (3, 3),
+    "long":     (12, 5),
+    "dotted":   (2, 4),
+    "dash-dot": (10, 4, 2, 4),
+}
+DASH_ORDER = ["solid", "dashed", "fine", "long", "dotted", "dash-dot"]
+DASH_LABELS = {
+    "solid": "Solid", "dashed": "Dashed", "fine": "Fine dash",
+    "long": "Long dash", "dotted": "Dotted", "dash-dot": "Dash-dot",
+}
+
+
+def dash_tuple(shape):
+    """Resolve a shape's dash pattern to a Tk/Pillow dash tuple.
+    Falls back to the legacy `dashed` bool, then to solid."""
+    pat = getattr(shape, "dash_pattern", "") or ""
+    if not pat:
+        pat = "dashed" if getattr(shape, "dashed", False) else "solid"
+    return DASH_PATTERNS.get(pat, ())
+
 
 class CanvasManager:
     """Manages canvas operations and shapes"""
@@ -21,6 +45,7 @@ class CanvasManager:
         self.shapes = []
         self.next_shape_id = 1
         self.selected_shape = None
+        self.selected_shapes = []   # group (marquee) selection — Phase A
         self.clipboard = None
         self.undo_stack = []
         self.redo_stack = []
@@ -368,11 +393,12 @@ class CanvasManager:
         is_bus = getattr(shape, "bus", False)
         lw = shape.width + 3 if is_bus else shape.width
         arsh = (20, 24, 8) if is_bus else (16, 20, 6)
+        dash = dash_tuple(shape)
 
         if shape.shape_type in ("line", "arrow"):
             shape.canvas_id = canvas.create_line(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                fill=shape.color, width=lw,
+                fill=shape.color, width=lw, dash=dash,
                 arrow=self.wire_arrow(shape), arrowshape=arsh, tags="shape"
             )
 
@@ -388,7 +414,7 @@ class CanvasManager:
             if len(dedup) < 2:
                 dedup.append(list(dedup[-1]))
             flat = [c for pt in dedup for c in pt]
-            kw = dict(fill=shape.color, width=lw,
+            kw = dict(fill=shape.color, width=lw, dash=dash,
                       tags="shape", joinstyle=tk.MITER,
                       arrow=self.wire_arrow(shape), arrowshape=arsh)
             shape.canvas_id = canvas.create_line(*flat, **kw)
@@ -686,6 +712,27 @@ class CanvasManager:
             self.shapes.remove(shape)
             self.clear_selection()
             self.redraw_junctions()
+
+    def delete_shapes(self, shapes):
+        """Delete several shapes as ONE undoable action (group delete)."""
+        victims = [s for s in shapes if s in self.shapes]
+        if not victims:
+            return
+        self.record_state()
+        victim_ids = {s.shape_id for s in victims}
+        for shape in victims:
+            self.app.canvas.delete(shape.canvas_id)
+            self.app.canvas.delete(self.ports_tag(shape))
+            self.app.canvas.delete(self.deco_tag(shape))
+            if shape.label_canvas_id:
+                self.app.canvas.delete(shape.label_canvas_id)
+        # Drop connections pointing at any deleted shape.
+        for s in self.shapes:
+            s.connections = [c for c in s.connections
+                             if c.get('target_id') not in victim_ids]
+        self.shapes = [s for s in self.shapes if s.shape_id not in victim_ids]
+        self.clear_selection()
+        self.redraw_junctions()
 
     def clear_all(self, record_undo=True):
         if record_undo and self.shapes:
@@ -1030,6 +1077,7 @@ class CanvasManager:
 
     def clear_selection(self):
         self.selected_shape = None
+        self.selected_shapes = []
         self.editing_endpoint = None
         if hasattr(self.app, 'canvas'):
             self.app.canvas.delete("highlight")
@@ -1037,6 +1085,7 @@ class CanvasManager:
             self.app.canvas.delete("label_highlight")
             self.app.canvas.delete("resize_handle")
             self.app.canvas.delete("net_highlight")
+            self.app.canvas.delete("group_highlight")
         self.app.editing_label = False
         self.app.label_shape = None
         self.app.resizing_shape = False
@@ -1049,6 +1098,35 @@ class CanvasManager:
             self.app.editing_net_label = None
         if hasattr(self.app, 'editing_slice_label'):
             self.app.editing_slice_label = None
+
+    def clear_group_selection(self):
+        """Drop the marquee group selection and its highlight."""
+        self.selected_shapes = []
+        if hasattr(self.app, 'canvas'):
+            self.app.canvas.delete("group_highlight")
+
+    def set_group_selection(self, shapes):
+        """Make `shapes` the active group selection. Clears any single
+        selection so the two selection modes never overlap visually."""
+        self.selected_shape = None
+        if hasattr(self.app, 'canvas'):
+            for tag in ("highlight", "endpoint_handle", "resize_handle",
+                        "net_highlight", "label_highlight"):
+                self.app.canvas.delete(tag)
+        self.selected_shapes = list(shapes)
+        self.draw_group_highlight()
+
+    def draw_group_highlight(self):
+        """Dashed green box around every shape in the group selection."""
+        canvas = self.app.canvas
+        canvas.delete("group_highlight")
+        for shape in self.selected_shapes:
+            b = self.app._shape_bounds(shape)
+            if not b:
+                continue
+            canvas.create_rectangle(b[0] - 3, b[1] - 3, b[2] + 3, b[3] + 3,
+                                    outline="#2e8b57", dash=(4, 3), width=2,
+                                    tags="group_highlight")
 
     def copy_shape(self):
         if self.selected_shape:
