@@ -11,7 +11,8 @@ from functools import partial
 
 from shapes import Shape, make_primitive_ports, set_port_grid, STANDARD_PINS
 from file_manager import FileManager
-from canvas_manager import CanvasManager, LINE_TYPES
+from canvas_manager import (CanvasManager, LINE_TYPES,
+                            DASH_PATTERNS, DASH_ORDER, DASH_LABELS)
 
 
 # Shape types that can take an interior fill color.
@@ -73,6 +74,7 @@ class DrawingApp:
         self.current_color = "black"
         self.current_fill = ""
         self.line_width = 2
+        self.annotation_dash = "dashed"   # default Note Line style
 
         # Grid
         self.grid_enabled = True
@@ -90,6 +92,14 @@ class DrawingApp:
         self.resizing_shape = False
         self.resize_handle = None
         self.resize_center = None
+
+        # Group (marquee) selection state — Phase A
+        self.marquee_start = None   # (x, y) canvas coords, or None
+        self.marquee_rect = None    # live rubber-band canvas item id
+
+        # Group move state — Phase B
+        self.group_dragging = False
+        self.group_anchor = None    # the grouped shape grabbed to start the drag
 
         # Ortho multi-click drawing state
         self.ortho_in_progress = False
@@ -295,6 +305,8 @@ class DrawingApp:
             ("Arrow",       "arrow",       "➡️",  "Draw arrow"),
             ("Note Arrow",  "annotation_arrow", "↗",
              "Annotation arrow — diagonal, non-electrical, never binds to objects"),
+            ("Note Line",   "annotation_line", "⇢",
+             "Annotation line — dashed, non-electrical, never binds to objects"),
             ("Ortho Line",  "ortho_line",  "⌐",
              "Draw line with 90° turns — left-click to add turns, right-click or Enter to finish, Esc to cancel"),
             ("Ortho Arrow", "ortho_arrow", "⌐→",
@@ -338,6 +350,13 @@ class DrawingApp:
                                  textvariable=self.width_var, command=self.update_width)
         width_spin.pack(side=tk.LEFT, padx=2)
         ToolTip(width_spin, "Line width (1-10)")
+
+        self.note_style_btn = tk.Button(toolbar, text="Line Style…",
+                                        command=self.choose_note_style)
+        self.note_style_btn.pack(side=tk.LEFT, padx=4)
+        ToolTip(self.note_style_btn,
+                "Annotation line style (solid / dashed patterns) + width — "
+                "sets the default and restyles a selected Note Line/Arrow")
 
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
 
@@ -412,6 +431,29 @@ class DrawingApp:
 
     def update_width(self):
         self.line_width = self.width_var.get()
+
+    def choose_note_style(self):
+        """Pick the annotation line dash pattern + width. Sets the default for
+        new Note Lines and restyles a selected annotation line/arrow."""
+        dlg = NoteStyleDialog(self.root, initial_pattern=self.annotation_dash,
+                              initial_width=self.line_width)
+        if dlg.result is None:
+            return
+        pattern, width = dlg.result
+        self.annotation_dash = pattern
+        self.line_width = width
+        self.width_var.set(width)
+        sel = self.canvas_manager.selected_shape
+        if (sel and sel.shape_type in ("line", "arrow")
+                and getattr(sel, 'annotation', False)):
+            self.canvas_manager.record_state()
+            sel.dash_pattern = pattern
+            sel.dashed = (pattern != "solid")
+            sel.width = width
+            self.canvas_manager.redraw_shape(sel)
+            self.file_manager.mark_modified()
+        self.status_bar.config(
+            text=f"Note line style: {DASH_LABELS.get(pattern, pattern)}, width {width}")
 
     def _update_fill_btn(self):
         """Reflect the current fill on the toolbar swatch."""
@@ -582,6 +624,22 @@ class DrawingApp:
             return
 
         if self.current_tool == "select":
+            # 0. Group move — if a marquee group exists and the press lands on
+            #    one of its members, drag the whole group (Phase B).
+            if self.canvas_manager.selected_shapes:
+                anchor = self._group_shape_at(x, y)
+                if anchor is not None:
+                    self.group_dragging = True
+                    self.group_anchor = anchor
+                    self.canvas_manager.drag_data = {
+                        "x": x, "y": y, "start_x": x, "start_y": y}
+                    n = len(self.canvas_manager.selected_shapes)
+                    self.status_bar.config(text=f"Moving group of {n} — drag to reposition")
+                    return
+                # Pressed outside the group — drop it and fall through to normal
+                # single selection / marquee behavior.
+                self.canvas_manager.clear_group_selection()
+
             # 1. Resize handle?
             items = self.canvas.find_overlapping(x - 3, y - 3, x + 3, y + 3)
             for item in reversed(items):
@@ -700,6 +758,10 @@ class DrawingApp:
             self.handle_selection(x, y)
             if self.canvas_manager.selected_shape:
                 self.canvas_manager.drag_data = {"x": x, "y": y, "start_x": x, "start_y": y}
+            else:
+                # Empty canvas — begin a rubber-band marquee (group select).
+                self.marquee_start = (x, y)
+                self.marquee_rect = None
         else:
             self.canvas_manager.drag_data = {"x": x, "y": y}
 
@@ -719,6 +781,21 @@ class DrawingApp:
         # Convert viewport pixels to canvas coords so hit-testing and
         # placement stay correct when the sheet is scrolled.
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+
+        # Rubber-band marquee selection (started on empty canvas, select tool)
+        if self.marquee_start is not None:
+            self._update_marquee(x, y)
+            return
+
+        # Group move (Phase B)
+        if self.group_dragging and self.canvas_manager.selected_shapes:
+            dx = x - self.canvas_manager.drag_data["x"]
+            dy = y - self.canvas_manager.drag_data["y"]
+            self._translate_group(dx, dy)
+            self.canvas_manager.drag_data["x"] = x
+            self.canvas_manager.drag_data["y"] = y
+            self.file_manager.mark_modified()
+            return
 
         # Ortho preview during drag (button held after placing a point)
         if self.ortho_in_progress:
@@ -954,6 +1031,32 @@ class DrawingApp:
         # placement stay correct when the sheet is scrolled.
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
+        # Finish a rubber-band marquee selection.
+        if self.marquee_start is not None:
+            self._finish_marquee(x, y)
+            return
+
+        # Finish a group move (Phase B).
+        if self.group_dragging:
+            self.group_dragging = False
+            sel = self.canvas_manager.selected_shapes
+            start_x = self.canvas_manager.drag_data.get("start_x", x)
+            start_y = self.canvas_manager.drag_data.get("start_y", y)
+            if (abs(x - start_x) > 2 or abs(y - start_y) > 2) and sel:
+                # Snap the whole group so the grabbed shape lands on the grid,
+                # preserving every shape's relative position.
+                if self.snap_to_grid and self.group_anchor is not None:
+                    sx, sy = self.snap_point(self.group_anchor.x1, self.group_anchor.y1)
+                    sdx, sdy = sx - self.group_anchor.x1, sy - self.group_anchor.y1
+                    if abs(sdx) > 0.1 or abs(sdy) > 0.1:
+                        self._translate_group(sdx, sdy)
+                self.canvas_manager.record_state()
+                n = len(sel)
+                self.status_bar.config(
+                    text=f"Moved {n} object{'s' if n != 1 else ''} (group)")
+            self.group_anchor = None
+            return
+
         # Ortho lines finalize via right-click or Enter — ignore release
         if self.current_tool in ("ortho_line", "ortho_arrow") and self.ortho_in_progress:
             return
@@ -1079,6 +1182,7 @@ class DrawingApp:
                             self.canvas.move(shape.canvas_id, snap_dx, snap_dy)
                             self.canvas.move("highlight", snap_dx, snap_dy)
                             self.canvas.move("endpoint_handle", snap_dx, snap_dy)
+                            self.canvas.move("resize_handle", snap_dx, snap_dy)
                             self.canvas.move(f"ports_{shape.shape_id}", snap_dx, snap_dy)
                             if shape.label_canvas_id:
                                 self.canvas.move(shape.label_canvas_id, snap_dx, snap_dy)
@@ -1207,7 +1311,7 @@ class DrawingApp:
 
     def draw_preview(self, x1, y1, x2, y2):
         """Draw preview for regular (single-gesture) drawing tools."""
-        if self.current_tool == "line":
+        if self.current_tool in ("line", "annotation_line"):
             return self.canvas.create_line(x1, y1, x2, y2,
                                            fill=self.current_color, width=self.line_width, dash=(4, 4))
         elif self.current_tool in ("arrow", "annotation_arrow"):
@@ -1306,6 +1410,13 @@ class DrawingApp:
                          color=self.current_color, width=self.line_width,
                          shape_type="arrow", annotation=True)
 
+        if self.current_tool == "annotation_line":
+            pat = self.annotation_dash
+            return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
+                         color=self.current_color, width=self.line_width,
+                         shape_type="line", annotation=True,
+                         dashed=(pat != "solid"), dash_pattern=pat)
+
         return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
                      color=self.current_color, width=self.line_width,
                      shape_type=self.current_tool, fill_color=self.current_fill)
@@ -1374,6 +1485,117 @@ class DrawingApp:
 
         self.status_bar.config(text="No shape selected")
 
+    # ------------------------------------------------------------------
+    # Group (marquee) selection — Phase A: select + highlight only
+    # ------------------------------------------------------------------
+    def _update_marquee(self, x, y):
+        x0, y0 = self.marquee_start
+        if self.marquee_rect is not None:
+            self.canvas.delete(self.marquee_rect)
+        self.marquee_rect = self.canvas.create_rectangle(
+            x0, y0, x, y, outline="#2e8b57", dash=(4, 3), width=1,
+            fill="", tags="marquee")
+        self.status_bar.config(
+            text="Selecting region — release to select the shapes it touches")
+
+    def _finish_marquee(self, x, y):
+        x0, y0 = self.marquee_start
+        self.marquee_start = None
+        if self.marquee_rect is not None:
+            self.canvas.delete(self.marquee_rect)
+            self.marquee_rect = None
+        self.canvas.delete("marquee")
+
+        rx1, ry1 = min(x0, x), min(y0, y)
+        rx2, ry2 = max(x0, x), max(y0, y)
+        # A tiny box is really a click on empty space: clear the selection.
+        if (rx2 - rx1) < 3 and (ry2 - ry1) < 3:
+            self.canvas_manager.clear_group_selection()
+            self.status_bar.config(text="No shape selected")
+            return
+
+        picked = []
+        for shape in self.canvas_manager.shapes:
+            b = self._shape_bounds(shape)
+            if b is None:
+                continue
+            bx1, by1, bx2, by2 = b
+            if bx1 <= rx2 and bx2 >= rx1 and by1 <= ry2 and by2 >= ry1:
+                picked.append(shape)
+
+        self.canvas_manager.set_group_selection(picked)
+        n = len(picked)
+        if n:
+            self.status_bar.config(
+                text=f"Selected {n} object{'s' if n != 1 else ''} (group)")
+        else:
+            self.status_bar.config(text="No shapes in region")
+
+    def _shape_bounds(self, shape):
+        """Axis-aligned bounds (x1, y1, x2, y2) of a shape in canvas coords,
+        preferring the rendered bbox so text and glyphs are covered."""
+        bbox = None
+        if getattr(shape, 'canvas_id', None):
+            try:
+                bbox = self.canvas.bbox(shape.canvas_id)
+            except Exception:
+                bbox = None
+        if bbox:
+            return bbox
+        xs = [shape.x1, shape.x2]
+        ys = [shape.y1, shape.y2]
+        for wp in getattr(shape, 'waypoints', None) or []:
+            xs.append(wp[0]); ys.append(wp[1])
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    def _group_shape_at(self, x, y, pad=4):
+        """Return the grouped shape whose bounds contain (x, y), or None.
+        A generous bbox test lets the user grab thin wires and hollow shapes."""
+        for s in self.canvas_manager.selected_shapes:
+            b = self._shape_bounds(s)
+            if b and (b[0] - pad) <= x <= (b[2] + pad) and (b[1] - pad) <= y <= (b[3] + pad):
+                return s
+        return None
+
+    def _translate_group(self, dx, dy):
+        """Move every shape in the group selection by (dx, dy), keeping wires
+        electrically consistent. A wire endpoint pinned to a block OUTSIDE the
+        group stays attached (not translated); endpoints pinned to a block
+        INSIDE the group ride along and are re-pinned from the moved block."""
+        if dx == 0 and dy == 0:
+            return
+        cm = self.canvas_manager
+        sel = cm.selected_shapes
+        sel_ids = {s.shape_id for s in sel}
+
+        for s in sel:
+            if s.shape_type in LINE_TYPES:
+                ext_pinned = {c.get('endpoint') for c in (s.connections or [])
+                              if isinstance(c, dict) and c.get('target_id') not in sel_ids}
+                if 'start' not in ext_pinned:
+                    s.x1 += dx;  s.y1 += dy
+                if 'end' not in ext_pinned:
+                    s.x2 += dx;  s.y2 += dy
+                for wp in (s.waypoints or []):
+                    wp[0] += dx;  wp[1] += dy
+            else:
+                s.x1 += dx;  s.y1 += dy
+                s.x2 += dx;  s.y2 += dy
+                for wp in (s.waypoints or []):
+                    wp[0] += dx;  wp[1] += dy
+
+        # Re-pin wires attached to any moved block (fixes both in-group wires
+        # and external wires that must follow a moved block).
+        for s in sel:
+            if s.shape_type not in LINE_TYPES:
+                cm.update_connected_lines(s)
+
+        # Repaint the group and its highlight from the new geometry.
+        for s in sel:
+            cm.redraw_shape(s)
+        cm.redraw_junctions()
+        cm.draw_group_highlight()
+
     def draw_ortho_handles(self, shape):
         """Draw draggable handles at every point of an ortho line."""
         hs = 6
@@ -1430,6 +1652,16 @@ class DrawingApp:
     # ------------------------------------------------------------------
 
     def delete_selected(self):
+        # Group delete (Phase C) — remove every marquee-selected shape as one
+        # undoable action.
+        if self.canvas_manager.selected_shapes:
+            self.canvas.delete("group_highlight")
+            n = len(self.canvas_manager.selected_shapes)
+            self.canvas_manager.delete_shapes(self.canvas_manager.selected_shapes)
+            self.group_dragging = False
+            self.group_anchor = None
+            self.status_bar.config(text=f"Deleted {n} object{'s' if n != 1 else ''} (group)")
+            return
         if self.canvas_manager.selected_shape:
             self.canvas.delete("highlight")
             self.canvas.delete("endpoint_handle")
@@ -2025,6 +2257,188 @@ class SheetSizeDialog:
         self.dialog.destroy()
 
 
+class NoteStyleDialog:
+    """Choose an annotation line dash pattern + width, with a live preview."""
+
+    def __init__(self, parent, initial_pattern="dashed", initial_width=2):
+        self.result = None
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Annotation Line Style")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.resizable(False, False)
+
+        f = ttk.Frame(self.dialog, padding=14)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(f, text="Style:").grid(row=0, column=0, sticky=tk.W, pady=4)
+        self.pattern_var = tk.StringVar(
+            value=DASH_LABELS.get(initial_pattern, "Dashed"))
+        self._label_to_key = {v: k for k, v in DASH_LABELS.items()}
+        ttk.Combobox(f, textvariable=self.pattern_var, width=14, state="readonly",
+                     values=[DASH_LABELS[k] for k in DASH_ORDER]).grid(
+                     row=0, column=1, sticky=tk.W, padx=6)
+
+        ttk.Label(f, text="Width:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.width_var = tk.IntVar(value=max(1, int(initial_width)))
+        ttk.Spinbox(f, from_=1, to=10, width=6, textvariable=self.width_var).grid(
+            row=1, column=1, sticky=tk.W, padx=6)
+
+        self.preview = tk.Canvas(f, width=240, height=40, bg="white",
+                                 highlightthickness=1, highlightbackground="#bbb")
+        self.preview.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+
+        bf = ttk.Frame(f)
+        bf.grid(row=3, column=0, columnspan=2, sticky=tk.E, pady=(12, 0))
+        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
+
+        self.pattern_var.trace_add("write", lambda *_: self._draw_preview())
+        self.width_var.trace_add("write", lambda *_: self._draw_preview())
+        self._draw_preview()
+
+        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
+        parent.wait_window(self.dialog)
+
+    def _key(self):
+        return self._label_to_key.get(self.pattern_var.get(), "dashed")
+
+    def _draw_preview(self):
+        self.preview.delete("all")
+        try:
+            w = max(1, int(self.width_var.get()))
+        except (tk.TclError, ValueError):
+            w = 2
+        dash = DASH_PATTERNS.get(self._key(), ())
+        self.preview.create_line(16, 20, 224, 20, fill="black", width=w,
+                                 dash=dash if dash else ())
+
+    def ok_clicked(self):
+        try:
+            w = max(1, int(self.width_var.get()))
+        except (tk.TclError, ValueError):
+            w = 2
+        self.result = (self._key(), w)
+        self.dialog.destroy()
+
+    def cancel_clicked(self):
+        self.result = None
+        self.dialog.destroy()
+
+
+class PinRangeDialog:
+    """Prompt for a numbered pin range (prefix + start..end, optional zero-pad)."""
+
+    def __init__(self, parent, initial_prefix="", initial_side="Left", sides=None):
+        self.result = None
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Add Pin Range")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+        self.dialog.resizable(False, False)
+
+        f = ttk.Frame(self.dialog, padding=14)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(f, text="Prefix:").grid(row=0, column=0, sticky=tk.W, pady=3)
+        self.prefix_var = tk.StringVar(value=initial_prefix)
+        pe = ttk.Entry(f, textvariable=self.prefix_var, width=16)
+        pe.grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=4)
+
+        ttk.Label(f, text="Start:").grid(row=1, column=0, sticky=tk.W, pady=3)
+        self.start_var = tk.IntVar(value=1)
+        ttk.Spinbox(f, from_=0, to=9999, textvariable=self.start_var,
+                    width=6).grid(row=1, column=1, sticky=tk.W, padx=4)
+        ttk.Label(f, text="End:").grid(row=1, column=2, sticky=tk.W, padx=(10, 0))
+        self.end_var = tk.IntVar(value=16)
+        ttk.Spinbox(f, from_=0, to=9999, textvariable=self.end_var,
+                    width=6).grid(row=1, column=3, sticky=tk.W, padx=4)
+
+        ttk.Label(f, text="Zero-pad width:").grid(row=2, column=0, columnspan=2,
+                                                  sticky=tk.W, pady=3)
+        self.pad_var = tk.IntVar(value=0)
+        ttk.Spinbox(f, from_=0, to=6, textvariable=self.pad_var,
+                    width=6).grid(row=2, column=2, sticky=tk.W, padx=4)
+
+        ttk.Label(f, text="Side:").grid(row=3, column=0, sticky=tk.W, pady=3)
+        self.side_var = tk.StringVar(value=initial_side)
+        ttk.Combobox(f, textvariable=self.side_var, width=8, state="readonly",
+                     values=sides or ["Left", "Right", "Top", "Bottom"]
+                     ).grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4)
+
+        self.preview_var = tk.StringVar()
+        ttk.Label(f, textvariable=self.preview_var, foreground="#1f6fc2").grid(
+            row=4, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
+
+        bf = ttk.Frame(f)
+        bf.grid(row=5, column=0, columnspan=4, sticky=tk.E, pady=(12, 0))
+        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
+
+        for v in (self.prefix_var, self.start_var, self.end_var, self.pad_var):
+            v.trace_add("write", lambda *_: self._update_preview())
+        self._update_preview()
+
+        pe.focus_set()
+        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
+        parent.wait_window(self.dialog)
+
+    def _read(self):
+        prefix = self.prefix_var.get().strip()
+        try:
+            start = int(self.start_var.get()); end = int(self.end_var.get())
+            pad = max(0, int(self.pad_var.get()))
+        except (tk.TclError, ValueError):
+            return None
+        return prefix, start, end, pad
+
+    def _names(self, limit=None):
+        r = self._read()
+        if not r:
+            return []
+        prefix, start, end, pad = r
+        step = 1 if end >= start else -1
+        names = []
+        for n in range(start, end + step, step):
+            num = str(abs(n)).zfill(pad) if pad else str(n)
+            names.append(f"{prefix}{num}")
+            if limit and len(names) >= limit:
+                break
+        return names
+
+    def _update_preview(self):
+        names = self._names()
+        if not names:
+            self.preview_var.set("")
+            return
+        shown = self._names(limit=3)
+        txt = ", ".join(shown)
+        if len(names) > 3:
+            txt += f", …, {names[-1]}"
+        self.preview_var.set(f"{len(names)} pin(s):  {txt}")
+
+    def ok_clicked(self):
+        r = self._read()
+        if not r:
+            messagebox.showinfo("Add Range", "Enter valid start/end numbers.", parent=self.dialog)
+            return
+        prefix, start, end, pad = r
+        if not prefix:
+            messagebox.showinfo("Add Range", "Enter a prefix (e.g. io).", parent=self.dialog)
+            return
+        if abs(end - start) + 1 > 256:
+            messagebox.showinfo("Add Range", "Range too large (max 256 pins).", parent=self.dialog)
+            return
+        self.result = (prefix, start, end, pad, self.side_var.get())
+        self.dialog.destroy()
+
+    def cancel_clicked(self):
+        self.result = None
+        self.dialog.destroy()
+
+
 class PortEditorDialog:
     """Add / remove named pins on a block shape."""
     SIDES = [("Left", "L"), ("Right", "R"), ("Top", "T"), ("Bottom", "B")]
@@ -2036,7 +2450,7 @@ class PortEditorDialog:
         self.dialog.title(title)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        self.dialog.geometry("380x430")
+        self.dialog.geometry("480x430")
 
         f = ttk.Frame(self.dialog, padding=12)
         f.pack(fill=tk.BOTH, expand=True)
@@ -2058,6 +2472,7 @@ class PortEditorDialog:
         ttk.Combobox(addf, textvariable=self.side_var, width=8, state="readonly",
                      values=[s[0] for s in self.SIDES]).pack(side=tk.LEFT, padx=4)
         ttk.Button(addf, text="Add", command=self.add_port).pack(side=tk.LEFT, padx=2)
+        ttk.Button(addf, text="Add Range…", command=self.add_range).pack(side=tk.LEFT, padx=2)
 
         editf = ttk.Frame(f)
         editf.pack(fill=tk.X, pady=6)
@@ -2097,6 +2512,35 @@ class PortEditorDialog:
                            'direction': 'inout'})
         self.name_var.set("")
         self.refresh()
+
+    def add_range(self):
+        """Bulk-add a numbered sequence of pins, e.g. io1..io16."""
+        base = self.name_var.get().strip()
+        dlg = PinRangeDialog(self.dialog, initial_prefix=base,
+                             initial_side=self.side_var.get(),
+                             sides=[s[0] for s in self.SIDES])
+        if dlg.result is None:
+            return
+        prefix, start, end, pad, side_label = dlg.result
+        side = self._side_code(side_label)
+        step = 1 if end >= start else -1
+        existing = {p['name'] for p in self.ports}
+        added, skipped = 0, 0
+        for n in range(start, end + step, step):
+            num = str(abs(n)).zfill(pad) if pad else str(n)
+            name = f"{prefix}{num}"
+            if name in existing:
+                skipped += 1
+                continue
+            self.ports.append({'name': name, 'side': side, 'direction': 'inout'})
+            existing.add(name)
+            added += 1
+        self.name_var.set("")
+        self.refresh()
+        if skipped:
+            messagebox.showinfo(
+                "Add Range",
+                f"Added {added} pin(s); skipped {skipped} duplicate name(s).")
 
     def rename_port(self):
         sel = self.listbox.curselection()
