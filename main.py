@@ -21,6 +21,18 @@
 #            - Note Line: non-electrical annotation line with a Line Style...
 #              picker (Solid / Dashed / Fine / Long / Dotted / Dash-dot + width),
 #              patterns render on canvas and in PNG/PDF export
+# 07/02/2026 - Refactor: dialog classes extracted to dialogs.py (no behavior
+#              change); fixed stale text_widget bind in LabelInputDialog that
+#              broke Ctrl+L Add Label
+#            - Refactor: mouse handlers dispatch per interaction mode
+#              (self.interaction; _drag_*/_release_* methods); one
+#              _reset_interaction_state() on tool/sheet switch
+#            - Fix: dragged net labels anchor to an arc-length position on
+#              the wire (net_label_t) so they no longer jump when the
+#              auto-router rebuilds a rerouted wire
+# 07/03/2026 - Sheet reordering: ◀ Move / Move ▶ buttons shift the active
+#              sheet within the package; the sheet stays active, the title
+#              block's "Sheet N of M" updates, order persists on save/load
 #
 # ============================================================================
 # File structure for your project:
@@ -30,7 +42,8 @@
 #   ├── shapes.py            (shape classes and data structures)
 #   ├── file_manager.py      (save/load functionality)
 #   ├── canvas_manager.py    (canvas operations)
-#   └── drawing_app.py       (bulk of drawing package code)
+#   ├── drawing_app.py       (bulk of drawing package code)
+#   └── dialogs.py           (Tk dialog classes)
 #
 # To use: Save all sections below into separate files as indicated
 # ============================================================================
