@@ -187,6 +187,11 @@ class Shape:
     net_label_dx: Optional[float] = None
     net_label_dy: Optional[float] = None
 
+    # Arc-length fraction (0..1) along the wire polyline where a dragged net
+    # label is anchored. None = default anchor (midpoint of longest segment).
+    # Keeps the label stable when the auto-router rebuilds the wire.
+    net_label_t: Optional[float] = None
+
     # Bit-slice tap label position override (px, relative to the tap point
     # on the wire). None = use the app's current default distance, same
     # drag-to-override behavior as the net label.
@@ -259,6 +264,7 @@ class Shape:
         data.setdefault('net_name', None)
         data.setdefault('net_label_dx', None)
         data.setdefault('net_label_dy', None)
+        data.setdefault('net_label_t', None)
         data.setdefault('slice_label_dx', None)
         data.setdefault('slice_label_dy', None)
         data.setdefault('conn_name', None)
