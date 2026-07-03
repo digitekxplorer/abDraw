@@ -18,6 +18,8 @@ No external EDA tooling required — abDraw runs anywhere Python and Tkinter run
 ### Schematic capture
 - **Named pins / ports** — pins on block edges (L/R/T/B), ordered and grid-aligned.
   Wires bind to a specific named pin and stay attached through moves and resizes.
+  Bulk-add numbered pin ranges (e.g. `io1`…`io16`) with optional zero-padding,
+  skipping any names that already exist.
 - **Primitives** — multiplexer (binary-labeled inputs, `sel` + `y`), register
   (D/Q/clk with clock triangle), adder (`+` glyph), and rotatable off-page connector.
 - **Buses & bit-slices** — thick bus wires, bit-slice taps (e.g. `[7:0]`), and
@@ -27,19 +29,24 @@ No external EDA tooling required — abDraw runs anywhere Python and Tkinter run
 - **Orthogonal auto-router** — wires enter and exit each pin perpendicular to its
   edge and reroute automatically as blocks move, with staggered approaches so
   parallel risers don't overlap. Manual waypoint editing is fully supported.
-- **Multi-sheet packages** — sheet tabs (add / rename / delete / switch), per-sheet
-  title block, and per-sheet page sizes (Letter, Legal, Tabloid, ANSI, A-series,
-  Custom) on a scrollable page + pasteboard canvas.
+- **Multi-sheet packages** — sheet tabs (add / rename / delete / reorder / switch),
+  per-sheet title block, and per-sheet page sizes (Letter, Legal, Tabloid, ANSI,
+  A-series, Custom) on a scrollable page + pasteboard canvas. Reordering keeps the
+  moved sheet active and renumbers each sheet's title block automatically.
 - **Netlist & DRC** — generate a `.net` netlist (union-find across all sheets) and
   validate the schematic, flagging unconnected pins.
 
 ### Drawing & annotation
 - **Shape tools** — Select, Line, Arrow, Rectangle, Square, Circle, Ellipse,
   Triangle, with adjustable thickness, stroke color, and grid snapping.
+- **Group selection** — marquee-drag to select multiple shapes, move them together
+  (pinned wires stay coherent), and delete them as a single undoable action.
 - **Fill** — No Fill or a chosen fill color per shape. Interior text (pin names,
   adder glyph, connector names) **auto-contrasts** the fill so labels stay readable.
-- **Note Arrow** — a non-electrical annotation arrow for pointing at a block from a
-  caption; excluded from the netlist, DRC, and junction detection.
+- **Note Arrow / Note Line** — non-electrical annotation arrow and line for pointing
+  at or underlining a block from a caption; excluded from the netlist, DRC, and
+  junction detection. Note Lines support named dash patterns (Solid, Dashed, Fine,
+  Long, Dotted, Dash-dot) and adjustable width, which render on canvas and in export.
 - **Text** — font, size, bold/italic, and left / center / right alignment.
 
 ### Files & export
@@ -76,6 +83,7 @@ python main.py
 | `canvas_manager.py` | Rendering, the orthogonal router, junctions, multi-sheet state, netlist. |
 | `shapes.py` | `Shape` and `Port` data structures with JSON round-tripping. |
 | `file_manager.py` | JSON save/load and the PIL-based PNG/PDF export engine. |
+| `dialogs.py` | Tk dialog classes (label, sheet size, note style, pin range, port editor, special pins, text input). |
 
 ## Usage notes
 
@@ -97,4 +105,4 @@ python main.py
 
 ## License
 
-MIT License.
+Released under the [MIT License](LICENSE).
