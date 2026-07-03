@@ -13,6 +13,8 @@ from shapes import Shape, make_primitive_ports, set_port_grid, STANDARD_PINS
 from file_manager import FileManager
 from canvas_manager import (CanvasManager, LINE_TYPES,
                             DASH_PATTERNS, DASH_ORDER, DASH_LABELS)
+from dialogs import (LabelInputDialog, SheetSizeDialog, NoteStyleDialog,
+                     PortEditorDialog, SpecialPinsDialog, TextInputDialog)
 
 
 # Shape types that can take an interior fill color.
@@ -101,6 +103,12 @@ class DrawingApp:
         self.group_dragging = False
         self.group_anchor = None    # the grouped shape grabbed to start the drag
 
+        # Interaction mode (handler refactor, Phase 1): ONE string naming the
+        # in-progress mouse interaction ("move", "resize", "marquee", ...).
+        # Stamped on press alongside the legacy flags; on_drag/on_release will
+        # be converted to dispatch on it in later phases.
+        self.interaction = None
+
         # Ortho multi-click drawing state
         self.ortho_in_progress = False
         self.ortho_start = None
@@ -175,7 +183,7 @@ class DrawingApp:
         edit_menu.add_cascade(label="Wire Arrowheads", menu=arrow_menu)
         edit_menu.add_command(label="Bit-Slice Label...", command=self.edit_slice_label_of_selected)
         edit_menu.add_command(label="Bit-Slice Label Distance...", command=self.ui_set_slice_label_distance)
-        edit_menu.add_command(label="Net Label...", command=self.edit_net_label_of_selected)
+        edit_menu.add_command(label="Net Label...", command=self.edit_net_label_of_selected, accelerator="Ctrl+Shift+N")
         edit_menu.add_command(label="Net Label Distance...", command=self.ui_set_net_label_distance)
         edit_menu.add_command(label="Rotate Connector Port", command=self.rotate_connector_of_selected, accelerator="Ctrl+R")
         edit_menu.add_command(label="Auto-Route Wire", command=self.auto_route_selected)
@@ -385,6 +393,7 @@ class DrawingApp:
         self.root.bind("<Control-l>", lambda e: self.add_label_to_selected())
         self.root.bind("<Control-p>", lambda e: self.edit_ports_of_selected())
         self.root.bind("<Control-Shift-P>", lambda e: self.special_pins_of_selected())
+        self.root.bind("<Control-Shift-N>", lambda e: self.edit_net_label_of_selected())
         self.root.bind("<Control-b>", lambda e: self.toggle_bus_of_selected())
         self.root.bind("<Control-r>", lambda e: self.rotate_connector_of_selected())
         self.root.bind("<Control-Shift-A>", lambda e: self.cycle_wire_arrows())
@@ -397,20 +406,35 @@ class DrawingApp:
     # Tool selection
     # ------------------------------------------------------------------
 
+    def _reset_interaction_state(self):
+        """Clear EVERY in-progress mouse-interaction flag and its canvas
+        decoration. One authoritative reset, called on tool switch and sheet
+        switch, so no drag state can leak across modes."""
+        self.interaction = None
+        self.editing_label = False
+        self.label_shape = None
+        self.resizing_shape = False
+        self.resize_handle = None
+        self.resize_center = None
+        self.editing_net_label = None
+        self.editing_slice_label = None
+        self.editing_segment = None
+        self.editing_waypoint = None
+        self.group_dragging = False
+        self.group_anchor = None
+        self.marquee_start = None
+        self.marquee_rect = None
+        self.canvas_manager.editing_endpoint = None
+        for tag in ("label_highlight", "marquee", "snap_indicator"):
+            self.canvas.delete(tag)
+
     def select_tool(self, tool):
         if self.ortho_in_progress:
             self._cancel_ortho_drawing()
 
         self.current_tool = tool
         self.canvas_manager.clear_selection()
-        self.editing_label = False
-        self.label_shape = None
-        self.canvas.delete("label_highlight")
-        self.resizing_shape = False
-        self.resize_handle = None
-        self.resize_center = None
-        self.editing_net_label = None
-        self.editing_slice_label = None
+        self._reset_interaction_state()
 
         for t, btn in self.tool_buttons.items():
             btn.state(['pressed'] if t == tool else ['!pressed'])
@@ -600,6 +624,7 @@ class DrawingApp:
             if not self.ortho_in_progress:
                 # First click — set start point
                 self.ortho_in_progress = True
+                self.interaction = "ortho"
                 self.ortho_start = [x, y]
                 self.ortho_waypoints = []
                 self.status_bar.config(
@@ -630,6 +655,7 @@ class DrawingApp:
                 anchor = self._group_shape_at(x, y)
                 if anchor is not None:
                     self.group_dragging = True
+                    self.interaction = "group_move"
                     self.group_anchor = anchor
                     self.canvas_manager.drag_data = {
                         "x": x, "y": y, "start_x": x, "start_y": y}
@@ -648,6 +674,7 @@ class DrawingApp:
                     for tag in tags:
                         if tag.endswith("_handle") and tag != "resize_handle":
                             self.resizing_shape = True
+                            self.interaction = "resize"
                             self.resize_handle = tag.replace("_handle", "")
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             shape = self.canvas_manager.selected_shape
@@ -667,6 +694,7 @@ class DrawingApp:
                     for shape in self.canvas_manager.shapes:
                         if shape.label_canvas_id == item:
                             self.editing_label = True
+                            self.interaction = "label"
                             self.label_shape = shape
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             bbox = self.canvas.bbox(item)
@@ -692,6 +720,7 @@ class DrawingApp:
                             dx, dy = self.canvas_manager.net_label_offset(shape)
                             shape.net_label_dx, shape.net_label_dy = dx, dy
                             self.editing_net_label = shape
+                            self.interaction = "net_label"
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             self.status_bar.config(
                                 text=f"Moving net label '{shape.net_name}' — drag to reposition")
@@ -703,6 +732,7 @@ class DrawingApp:
                             dx, dy = self.canvas_manager.slice_label_offset(shape)
                             shape.slice_label_dx, shape.slice_label_dy = dx, dy
                             self.editing_slice_label = shape
+                            self.interaction = "slice_label"
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             self.status_bar.config(
                                 text=f"Moving slice label '{shape.slice_label}' — drag to reposition")
@@ -714,17 +744,20 @@ class DrawingApp:
                 for tag in tags:
                     if tag == "ortho_start_handle":
                         self.editing_waypoint = "start"
+                        self.interaction = "waypoint"
                         self.canvas_manager.drag_data = {"x": x, "y": y}
                         self.status_bar.config(text="Dragging start point")
                         return
                     elif tag == "ortho_end_handle":
                         self.editing_waypoint = "end"
+                        self.interaction = "waypoint"
                         self.canvas_manager.drag_data = {"x": x, "y": y}
                         self.status_bar.config(text="Dragging end point")
                         return
                     elif tag.startswith("ortho_seg_") and tag.endswith("_handle"):
                         try:
                             self.editing_segment = int(tag[10:-7])
+                            self.interaction = "segment"
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             self.status_bar.config(text="Sliding segment")
                             return
@@ -734,6 +767,7 @@ class DrawingApp:
                         try:
                             idx = int(tag[9:-7])
                             self.editing_waypoint = idx
+                            self.interaction = "waypoint"
                             self.canvas_manager.drag_data = {"x": x, "y": y}
                             self.status_bar.config(text=f"Dragging waypoint {idx + 1}")
                             return
@@ -745,11 +779,13 @@ class DrawingApp:
                 tags = self.canvas.gettags(item)
                 if "start_handle" in tags:
                     self.canvas_manager.editing_endpoint = "start"
+                    self.interaction = "endpoint"
                     self.canvas_manager.drag_data = {"x": x, "y": y}
                     self.status_bar.config(text="Editing start point — drag to connect")
                     return
                 elif "end_handle" in tags:
                     self.canvas_manager.editing_endpoint = "end"
+                    self.interaction = "endpoint"
                     self.canvas_manager.drag_data = {"x": x, "y": y}
                     self.status_bar.config(text="Editing end point — drag to connect")
                     return
@@ -757,12 +793,15 @@ class DrawingApp:
             # 5. Regular shape selection
             self.handle_selection(x, y)
             if self.canvas_manager.selected_shape:
+                self.interaction = "move"
                 self.canvas_manager.drag_data = {"x": x, "y": y, "start_x": x, "start_y": y}
             else:
                 # Empty canvas — begin a rubber-band marquee (group select).
+                self.interaction = "marquee"
                 self.marquee_start = (x, y)
                 self.marquee_rect = None
         else:
+            self.interaction = "draw"
             self.canvas_manager.drag_data = {"x": x, "y": y}
 
     @staticmethod
@@ -789,12 +828,7 @@ class DrawingApp:
 
         # Group move (Phase B)
         if self.group_dragging and self.canvas_manager.selected_shapes:
-            dx = x - self.canvas_manager.drag_data["x"]
-            dy = y - self.canvas_manager.drag_data["y"]
-            self._translate_group(dx, dy)
-            self.canvas_manager.drag_data["x"] = x
-            self.canvas_manager.drag_data["y"] = y
-            self.file_manager.mark_modified()
+            self._drag_group_move(x, y)
             return
 
         # Ortho preview during drag (button held after placing a point)
@@ -804,232 +838,264 @@ class DrawingApp:
             return
 
         if self.current_tool == "select":
-            # Net label drag
-            if self.editing_net_label is not None:
-                shape = self.editing_net_label
-                dx = x - self.canvas_manager.drag_data["x"]
-                dy = y - self.canvas_manager.drag_data["y"]
-                shape.net_label_dx = (shape.net_label_dx or 0) + dx
-                shape.net_label_dy = (shape.net_label_dy or 0) + dy
-                self.canvas_manager.drag_data["x"] = x
-                self.canvas_manager.drag_data["y"] = y
-                self.canvas_manager.redraw_shape(shape)
-                self.file_manager.mark_modified()
-                return
+            # Handler-refactor Phase 2: dispatch on the interaction mode
+            # stamped in on_press. Each handler keeps its own legacy-flag
+            # guard, so a flag cleared mid-gesture (e.g. by a double-click)
+            # still no-ops exactly as the old if-ladder did.
+            if self.interaction:
+                handler = getattr(self, "_drag_" + self.interaction, None)
+                if handler:
+                    handler(x, y)
+            return
 
-            # Bit-slice label drag
-            if self.editing_slice_label is not None:
-                shape = self.editing_slice_label
-                dx = x - self.canvas_manager.drag_data["x"]
-                dy = y - self.canvas_manager.drag_data["y"]
-                shape.slice_label_dx = (shape.slice_label_dx or 0) + dx
-                shape.slice_label_dy = (shape.slice_label_dy or 0) + dy
-                self.canvas_manager.drag_data["x"] = x
-                self.canvas_manager.drag_data["y"] = y
-                self.canvas_manager.redraw_shape(shape)
-                self.file_manager.mark_modified()
-                return
+        # Preview for regular (non-ortho) drawing tools
+        self._drag_tool_preview(x, y)
 
-            # Resize
-            if self.resizing_shape and self.canvas_manager.selected_shape:
-                shape = self.canvas_manager.selected_shape
-                if self.snap_to_grid:
-                    x, y = self.snap_point(x, y)
+    # ------------------------------------------------------------------
+    # Per-mode drag handlers (dispatched from on_drag via self.interaction)
+    # ------------------------------------------------------------------
 
-                if shape.shape_type == "square":
-                    if self.resize_handle == 'nw':   shape.x1, shape.y1 = x, y
-                    elif self.resize_handle == 'ne': shape.x2, shape.y1 = x, y
-                    elif self.resize_handle == 'sw': shape.x1, shape.y2 = x, y
-                    elif self.resize_handle == 'se': shape.x2, shape.y2 = x, y
-                    size = max(abs(shape.x2 - shape.x1), abs(shape.y2 - shape.y1))
-                    if self.resize_handle == 'se':
-                        shape.x2 = shape.x1 + (size if shape.x2 > shape.x1 else -size)
-                        shape.y2 = shape.y1 + (size if shape.y2 > shape.y1 else -size)
-                    elif self.resize_handle == 'nw':
-                        shape.x1 = shape.x2 - (size if shape.x2 > shape.x1 else -size)
-                        shape.y1 = shape.y2 - (size if shape.y2 > shape.y1 else -size)
-                    elif self.resize_handle == 'ne':
-                        shape.x2 = shape.x1 + (size if shape.x2 > shape.x1 else -size)
-                        shape.y1 = shape.y2 - (size if shape.y2 > shape.y1 else -size)
-                    elif self.resize_handle == 'sw':
-                        shape.x1 = shape.x2 - (size if shape.x2 > shape.x1 else -size)
-                        shape.y2 = shape.y1 + (size if shape.y2 > shape.y1 else -size)
-                elif shape.shape_type == "circle":
-                    cx, cy = self.resize_center
-                    radius = max(math.sqrt((x - cx) ** 2 + (y - cy) ** 2), 5)
-                    shape.x1, shape.y1, shape.x2, shape.y2 = cx-radius, cy-radius, cx+radius, cy+radius
-                elif shape.shape_type == "ellipse":
-                    cx, cy = self.resize_center
-                    rx = max(abs(x - cx) if self.resize_handle in ('ne', 'se') else abs(cx - x), 5)
-                    ry = max(abs(y - cy) if self.resize_handle in ('sw', 'se') else abs(cy - y), 5)
-                    shape.x1, shape.y1, shape.x2, shape.y2 = cx-rx, cy-ry, cx+rx, cy+ry
-                else:
-                    if self.resize_handle == 'nw':   shape.x1, shape.y1 = x, y
-                    elif self.resize_handle == 'ne': shape.x2, shape.y1 = x, y
-                    elif self.resize_handle == 'sw': shape.x1, shape.y2 = x, y
-                    elif self.resize_handle == 'se': shape.x2, shape.y2 = x, y
+    def _drag_group_move(self, x, y):
+        dx = x - self.canvas_manager.drag_data["x"]
+        dy = y - self.canvas_manager.drag_data["y"]
+        self._translate_group(dx, dy)
+        self.canvas_manager.drag_data["x"] = x
+        self.canvas_manager.drag_data["y"] = y
+        self.file_manager.mark_modified()
 
-                self.canvas_manager.redraw_shape(shape)
-                self.canvas.delete("resize_handle")
-                self.draw_resize_handles(shape)
-                self.canvas.delete("highlight")
-                coords = [shape.x1, shape.y1, shape.x2, shape.y2]
-                self.canvas.create_rectangle(
-                    min(coords[0::2]) - 5, min(coords[1::2]) - 5,
-                    max(coords[0::2]) + 5, max(coords[1::2]) + 5,
-                    outline="blue", dash=(5, 5), width=2, tags="highlight"
-                )
-                self.file_manager.mark_modified()
-                return
+    def _drag_net_label(self, x, y):
+        shape = self.editing_net_label
+        if shape is None:
+            return
+        dx = x - self.canvas_manager.drag_data["x"]
+        dy = y - self.canvas_manager.drag_data["y"]
+        shape.net_label_dx = (shape.net_label_dx or 0) + dx
+        shape.net_label_dy = (shape.net_label_dy or 0) + dy
+        self.canvas_manager.drag_data["x"] = x
+        self.canvas_manager.drag_data["y"] = y
+        self.canvas_manager.redraw_shape(shape)
+        self.file_manager.mark_modified()
 
-            # Label drag
-            if self.editing_label and self.label_shape:
-                dx = x - self.canvas_manager.drag_data["x"]
-                dy = y - self.canvas_manager.drag_data["y"]
-                self.canvas.move(self.label_shape.label_canvas_id, dx, dy)
-                self.canvas.move("label_highlight", dx, dy)
-                self.label_shape.label_offset_x += dx
-                self.label_shape.label_offset_y += dy
-                self.canvas_manager.drag_data["x"] = x
-                self.canvas_manager.drag_data["y"] = y
-                self.file_manager.mark_modified()
-                return
+    def _drag_slice_label(self, x, y):
+        shape = self.editing_slice_label
+        if shape is None:
+            return
+        dx = x - self.canvas_manager.drag_data["x"]
+        dy = y - self.canvas_manager.drag_data["y"]
+        shape.slice_label_dx = (shape.slice_label_dx or 0) + dx
+        shape.slice_label_dy = (shape.slice_label_dy or 0) + dy
+        self.canvas_manager.drag_data["x"] = x
+        self.canvas_manager.drag_data["y"] = y
+        self.canvas_manager.redraw_shape(shape)
+        self.file_manager.mark_modified()
 
-            # Ortho segment slide — move the whole mid-segment as a unit
-            if self.editing_segment is not None and self.canvas_manager.selected_shape:
-                shape = self.canvas_manager.selected_shape
-                i = self.editing_segment
-                if 0 <= i < len(shape.waypoints) - 1:
-                    cx, cy = self.snap_point(x, y) if self.snap_to_grid else (x, y)
-                    p0, p1 = shape.waypoints[i], shape.waypoints[i + 1]
-                    horizontal = abs(p1[0] - p0[0]) >= abs(p1[1] - p0[1])
-                    if horizontal:          # slide vertically
-                        p0[1] = cy
-                        p1[1] = cy
-                    else:                    # slide horizontally
-                        p0[0] = cx
-                        p1[0] = cx
-                    shape.user_routed = True
-                    self.canvas_manager.redraw_shape(shape)
-                    self.canvas.delete("endpoint_handle")
-                    self.draw_ortho_handles(shape)
-                    self.canvas.delete("highlight")
-                    all_x = [shape.x1, shape.x2] + [wp[0] for wp in shape.waypoints]
-                    all_y = [shape.y1, shape.y2] + [wp[1] for wp in shape.waypoints]
-                    self.canvas.create_rectangle(
-                        min(all_x) - 5, min(all_y) - 5, max(all_x) + 5, max(all_y) + 5,
-                        outline="blue", dash=(5, 5), width=2, tags="highlight")
-                    self.file_manager.mark_modified()
-                return
+    def _drag_resize(self, x, y):
+        shape = self.canvas_manager.selected_shape
+        if not (self.resizing_shape and shape):
+            return
+        if self.snap_to_grid:
+            x, y = self.snap_point(x, y)
 
-            # Ortho waypoint drag
-            if self.editing_waypoint is not None and self.canvas_manager.selected_shape:
-                shape = self.canvas_manager.selected_shape
-
-                if self.editing_waypoint in ("start", "end"):
-                    # Endpoints participate in shape snapping
-                    snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(x, y, shape)
-                    if not snap_shape and self.snap_to_grid:
-                        snap_x, snap_y = self.snap_point(x, y)
-                    if self.editing_waypoint == "start":
-                        shape.x1, shape.y1 = snap_x, snap_y
-                    else:
-                        shape.x2, shape.y2 = snap_x, snap_y
-                    # Show/hide snap indicator
-                    self.canvas.delete("snap_indicator")
-                    if snap_shape:
-                        self.canvas.create_oval(
-                            snap_x - 8, snap_y - 8, snap_x + 8, snap_y + 8,
-                            outline="blue", width=2, dash=(2, 2), tags="snap_indicator"
-                        )
-                else:
-                    # Interior waypoints snap to grid only
-                    if self.snap_to_grid:
-                        x, y = self.snap_point(x, y)
-                    shape.waypoints[self.editing_waypoint] = [x, y]
-                    shape.user_routed = True   # explicit manual edit wins
-
-                self.canvas_manager.redraw_shape(shape)
-                self.canvas.delete("endpoint_handle")
-                self.draw_ortho_handles(shape)
-                self.canvas.delete("highlight")
-                all_x = [shape.x1, shape.x2] + [wp[0] for wp in shape.waypoints]
-                all_y = [shape.y1, shape.y2] + [wp[1] for wp in shape.waypoints]
-                self.canvas.create_rectangle(
-                    min(all_x) - 5, min(all_y) - 5, max(all_x) + 5, max(all_y) + 5,
-                    outline="blue", dash=(5, 5), width=2, tags="highlight"
-                )
-                self.file_manager.mark_modified()
-                return
-
-            # Regular line endpoint drag
-            if self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape:
-                _sel = self.canvas_manager.selected_shape
-                if getattr(_sel, 'annotation', False):
-                    # Annotation arrows are free: grid snap only, never bind.
-                    snap_x, snap_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
-                    snap_shape = None
-                else:
-                    snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
-                        x, y, self.canvas_manager.selected_shape)
-                    if not snap_shape and self.snap_to_grid:
-                        snap_x, snap_y = self.snap_point(x, y)
-                if self.canvas_manager.editing_endpoint == "start":
-                    self.canvas_manager.selected_shape.x1 = snap_x
-                    self.canvas_manager.selected_shape.y1 = snap_y
-                else:
-                    self.canvas_manager.selected_shape.x2 = snap_x
-                    self.canvas_manager.selected_shape.y2 = snap_y
-                self.canvas_manager.redraw_shape(self.canvas_manager.selected_shape)
-                self.canvas.delete("endpoint_handle")
-                self.draw_endpoint_handles(self.canvas_manager.selected_shape)
-                self.canvas.delete("snap_indicator")
-                if snap_shape:
-                    self.canvas.create_oval(snap_x - 8, snap_y - 8, snap_x + 8, snap_y + 8,
-                                            outline="blue", width=2, dash=(2, 2), tags="snap_indicator")
-                return
-
-            # Move selected shape
-            if (self.canvas_manager.selected_shape
-                    and not self.canvas_manager.editing_endpoint
-                    and not self.resizing_shape
-                    and self.editing_waypoint is None):
-                dx = x - self.canvas_manager.drag_data["x"]
-                dy = y - self.canvas_manager.drag_data["y"]
-                shape = self.canvas_manager.selected_shape
-                self.canvas.move(shape.canvas_id, dx, dy)
-                self.canvas.move("highlight", dx, dy)
-                self.canvas.move("endpoint_handle", dx, dy)
-                self.canvas.move("resize_handle", dx, dy)
-                self.canvas.move(f"ports_{shape.shape_id}", dx, dy)
-                if shape.label_canvas_id:
-                    self.canvas.move(shape.label_canvas_id, dx, dy)
-                shape.x1 += dx;  shape.y1 += dy
-                if shape.shape_type == "text":
-                    shape.x2 = shape.x1;  shape.y2 = shape.y1
-                else:
-                    shape.x2 += dx;  shape.y2 += dy
-                for wp in shape.waypoints:
-                    wp[0] += dx;  wp[1] += dy
-                self.canvas_manager.update_connected_lines(shape)
-                self.canvas_manager.drag_data["x"] = x
-                self.canvas_manager.drag_data["y"] = y
-                self.file_manager.mark_modified()
+        if shape.shape_type == "square":
+            if self.resize_handle == 'nw':   shape.x1, shape.y1 = x, y
+            elif self.resize_handle == 'ne': shape.x2, shape.y1 = x, y
+            elif self.resize_handle == 'sw': shape.x1, shape.y2 = x, y
+            elif self.resize_handle == 'se': shape.x2, shape.y2 = x, y
+            size = max(abs(shape.x2 - shape.x1), abs(shape.y2 - shape.y1))
+            if self.resize_handle == 'se':
+                shape.x2 = shape.x1 + (size if shape.x2 > shape.x1 else -size)
+                shape.y2 = shape.y1 + (size if shape.y2 > shape.y1 else -size)
+            elif self.resize_handle == 'nw':
+                shape.x1 = shape.x2 - (size if shape.x2 > shape.x1 else -size)
+                shape.y1 = shape.y2 - (size if shape.y2 > shape.y1 else -size)
+            elif self.resize_handle == 'ne':
+                shape.x2 = shape.x1 + (size if shape.x2 > shape.x1 else -size)
+                shape.y1 = shape.y2 - (size if shape.y2 > shape.y1 else -size)
+            elif self.resize_handle == 'sw':
+                shape.x1 = shape.x2 - (size if shape.x2 > shape.x1 else -size)
+                shape.y2 = shape.y1 + (size if shape.y2 > shape.y1 else -size)
+        elif shape.shape_type == "circle":
+            cx, cy = self.resize_center
+            radius = max(math.sqrt((x - cx) ** 2 + (y - cy) ** 2), 5)
+            shape.x1, shape.y1, shape.x2, shape.y2 = cx-radius, cy-radius, cx+radius, cy+radius
+        elif shape.shape_type == "ellipse":
+            cx, cy = self.resize_center
+            rx = max(abs(x - cx) if self.resize_handle in ('ne', 'se') else abs(cx - x), 5)
+            ry = max(abs(y - cy) if self.resize_handle in ('sw', 'se') else abs(cy - y), 5)
+            shape.x1, shape.y1, shape.x2, shape.y2 = cx-rx, cy-ry, cx+rx, cy+ry
         else:
-            # Preview for regular (non-ortho) drawing tools
-            draw_x, draw_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
-            if self.canvas_manager.temp_shape:
-                self.canvas.delete(self.canvas_manager.temp_shape)
-            self.canvas_manager.temp_shape = self.draw_preview(
-                self.canvas_manager.drag_data["x"],
-                self.canvas_manager.drag_data["y"],
-                draw_x, draw_y
-            )
+            if self.resize_handle == 'nw':   shape.x1, shape.y1 = x, y
+            elif self.resize_handle == 'ne': shape.x2, shape.y1 = x, y
+            elif self.resize_handle == 'sw': shape.x1, shape.y2 = x, y
+            elif self.resize_handle == 'se': shape.x2, shape.y2 = x, y
+
+        self.canvas_manager.redraw_shape(shape)
+        self.canvas.delete("resize_handle")
+        self.draw_resize_handles(shape)
+        self.canvas.delete("highlight")
+        coords = [shape.x1, shape.y1, shape.x2, shape.y2]
+        self.canvas.create_rectangle(
+            min(coords[0::2]) - 5, min(coords[1::2]) - 5,
+            max(coords[0::2]) + 5, max(coords[1::2]) + 5,
+            outline="blue", dash=(5, 5), width=2, tags="highlight"
+        )
+        self.file_manager.mark_modified()
+
+    def _drag_label(self, x, y):
+        if not (self.editing_label and self.label_shape):
+            return
+        dx = x - self.canvas_manager.drag_data["x"]
+        dy = y - self.canvas_manager.drag_data["y"]
+        self.canvas.move(self.label_shape.label_canvas_id, dx, dy)
+        self.canvas.move("label_highlight", dx, dy)
+        self.label_shape.label_offset_x += dx
+        self.label_shape.label_offset_y += dy
+        self.canvas_manager.drag_data["x"] = x
+        self.canvas_manager.drag_data["y"] = y
+        self.file_manager.mark_modified()
+
+    def _drag_segment(self, x, y):
+        # Ortho segment slide — move the whole mid-segment as a unit
+        shape = self.canvas_manager.selected_shape
+        if self.editing_segment is None or not shape:
+            return
+        i = self.editing_segment
+        if 0 <= i < len(shape.waypoints) - 1:
+            cx, cy = self.snap_point(x, y) if self.snap_to_grid else (x, y)
+            p0, p1 = shape.waypoints[i], shape.waypoints[i + 1]
+            horizontal = abs(p1[0] - p0[0]) >= abs(p1[1] - p0[1])
+            if horizontal:          # slide vertically
+                p0[1] = cy
+                p1[1] = cy
+            else:                    # slide horizontally
+                p0[0] = cx
+                p1[0] = cx
+            shape.user_routed = True
+            self.canvas_manager.redraw_shape(shape)
+            self.canvas.delete("endpoint_handle")
+            self.draw_ortho_handles(shape)
+            self.canvas.delete("highlight")
+            all_x = [shape.x1, shape.x2] + [wp[0] for wp in shape.waypoints]
+            all_y = [shape.y1, shape.y2] + [wp[1] for wp in shape.waypoints]
+            self.canvas.create_rectangle(
+                min(all_x) - 5, min(all_y) - 5, max(all_x) + 5, max(all_y) + 5,
+                outline="blue", dash=(5, 5), width=2, tags="highlight")
+            self.file_manager.mark_modified()
+
+    def _drag_waypoint(self, x, y):
+        shape = self.canvas_manager.selected_shape
+        if self.editing_waypoint is None or not shape:
+            return
+
+        if self.editing_waypoint in ("start", "end"):
+            # Endpoints participate in shape snapping
+            snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(x, y, shape)
+            if not snap_shape and self.snap_to_grid:
+                snap_x, snap_y = self.snap_point(x, y)
+            if self.editing_waypoint == "start":
+                shape.x1, shape.y1 = snap_x, snap_y
+            else:
+                shape.x2, shape.y2 = snap_x, snap_y
+            # Show/hide snap indicator
+            self.canvas.delete("snap_indicator")
+            if snap_shape:
+                self.canvas.create_oval(
+                    snap_x - 8, snap_y - 8, snap_x + 8, snap_y + 8,
+                    outline="blue", width=2, dash=(2, 2), tags="snap_indicator"
+                )
+        else:
+            # Interior waypoints snap to grid only
+            if self.snap_to_grid:
+                x, y = self.snap_point(x, y)
+            shape.waypoints[self.editing_waypoint] = [x, y]
+            shape.user_routed = True   # explicit manual edit wins
+
+        self.canvas_manager.redraw_shape(shape)
+        self.canvas.delete("endpoint_handle")
+        self.draw_ortho_handles(shape)
+        self.canvas.delete("highlight")
+        all_x = [shape.x1, shape.x2] + [wp[0] for wp in shape.waypoints]
+        all_y = [shape.y1, shape.y2] + [wp[1] for wp in shape.waypoints]
+        self.canvas.create_rectangle(
+            min(all_x) - 5, min(all_y) - 5, max(all_x) + 5, max(all_y) + 5,
+            outline="blue", dash=(5, 5), width=2, tags="highlight"
+        )
+        self.file_manager.mark_modified()
+
+    def _drag_endpoint(self, x, y):
+        if not (self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape):
+            return
+        _sel = self.canvas_manager.selected_shape
+        if getattr(_sel, 'annotation', False):
+            # Annotation arrows are free: grid snap only, never bind.
+            snap_x, snap_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
+            snap_shape = None
+        else:
+            snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
+                x, y, self.canvas_manager.selected_shape)
+            if not snap_shape and self.snap_to_grid:
+                snap_x, snap_y = self.snap_point(x, y)
+        if self.canvas_manager.editing_endpoint == "start":
+            self.canvas_manager.selected_shape.x1 = snap_x
+            self.canvas_manager.selected_shape.y1 = snap_y
+        else:
+            self.canvas_manager.selected_shape.x2 = snap_x
+            self.canvas_manager.selected_shape.y2 = snap_y
+        self.canvas_manager.redraw_shape(self.canvas_manager.selected_shape)
+        self.canvas.delete("endpoint_handle")
+        self.draw_endpoint_handles(self.canvas_manager.selected_shape)
+        self.canvas.delete("snap_indicator")
+        if snap_shape:
+            self.canvas.create_oval(snap_x - 8, snap_y - 8, snap_x + 8, snap_y + 8,
+                                    outline="blue", width=2, dash=(2, 2), tags="snap_indicator")
+
+    def _drag_move(self, x, y):
+        if (not self.canvas_manager.selected_shape
+                or self.canvas_manager.editing_endpoint
+                or self.resizing_shape
+                or self.editing_waypoint is not None):
+            return
+        dx = x - self.canvas_manager.drag_data["x"]
+        dy = y - self.canvas_manager.drag_data["y"]
+        shape = self.canvas_manager.selected_shape
+        self.canvas.move(shape.canvas_id, dx, dy)
+        self.canvas.move("highlight", dx, dy)
+        self.canvas.move("endpoint_handle", dx, dy)
+        self.canvas.move("resize_handle", dx, dy)
+        self.canvas.move(f"ports_{shape.shape_id}", dx, dy)
+        if shape.label_canvas_id:
+            self.canvas.move(shape.label_canvas_id, dx, dy)
+        shape.x1 += dx;  shape.y1 += dy
+        if shape.shape_type == "text":
+            shape.x2 = shape.x1;  shape.y2 = shape.y1
+        else:
+            shape.x2 += dx;  shape.y2 += dy
+        for wp in shape.waypoints:
+            wp[0] += dx;  wp[1] += dy
+        self.canvas_manager.update_connected_lines(shape)
+        self.canvas_manager.drag_data["x"] = x
+        self.canvas_manager.drag_data["y"] = y
+        self.file_manager.mark_modified()
+
+    def _drag_tool_preview(self, x, y):
+        draw_x, draw_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
+        if self.canvas_manager.temp_shape:
+            self.canvas.delete(self.canvas_manager.temp_shape)
+        self.canvas_manager.temp_shape = self.draw_preview(
+            self.canvas_manager.drag_data["x"],
+            self.canvas_manager.drag_data["y"],
+            draw_x, draw_y
+        )
 
     def on_release(self, event):
         # Convert viewport pixels to canvas coords so hit-testing and
         # placement stay correct when the sheet is scrolled.
         x, y = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+
+        # Handler-refactor Phase 3: capture the mode stamped in on_press,
+        # then dispatch. Each _release_* handler keeps its legacy-flag guard.
+        mode = self.interaction
+        self.interaction = None
 
         # Finish a rubber-band marquee selection.
         if self.marquee_start is not None:
@@ -1038,177 +1104,217 @@ class DrawingApp:
 
         # Finish a group move (Phase B).
         if self.group_dragging:
-            self.group_dragging = False
-            sel = self.canvas_manager.selected_shapes
-            start_x = self.canvas_manager.drag_data.get("start_x", x)
-            start_y = self.canvas_manager.drag_data.get("start_y", y)
-            if (abs(x - start_x) > 2 or abs(y - start_y) > 2) and sel:
-                # Snap the whole group so the grabbed shape lands on the grid,
-                # preserving every shape's relative position.
-                if self.snap_to_grid and self.group_anchor is not None:
-                    sx, sy = self.snap_point(self.group_anchor.x1, self.group_anchor.y1)
-                    sdx, sdy = sx - self.group_anchor.x1, sy - self.group_anchor.y1
-                    if abs(sdx) > 0.1 or abs(sdy) > 0.1:
-                        self._translate_group(sdx, sdy)
-                self.canvas_manager.record_state()
-                n = len(sel)
-                self.status_bar.config(
-                    text=f"Moved {n} object{'s' if n != 1 else ''} (group)")
-            self.group_anchor = None
+            self._release_group_move(x, y)
             return
 
         # Ortho lines finalize via right-click or Enter — ignore release
         if self.current_tool in ("ortho_line", "ortho_arrow") and self.ortho_in_progress:
             return
 
-        if self.current_tool != "select" and self.snap_to_grid:
-            x, y = self.snap_point(x, y)
-
         if self.current_tool == "select":
-            if self.editing_net_label is not None:
-                self.editing_net_label = None
-                self.canvas_manager.record_state()
-                self.status_bar.config(text="Net label moved")
-                return
+            if mode:
+                handler = getattr(self, "_release_" + mode, None)
+                if handler:
+                    handler(x, y)
+            return
 
-            if self.editing_slice_label is not None:
-                self.editing_slice_label = None
-                self.canvas_manager.record_state()
-                self.status_bar.config(text="Slice label moved")
-                return
+        if self.snap_to_grid:
+            x, y = self.snap_point(x, y)
+        self._release_draw(x, y)
 
-            if self.resizing_shape:
-                self.resizing_shape = False
-                self.resize_handle = None
-                self.resize_center = None
-                self.canvas_manager.record_state()
-                self.status_bar.config(text="Shape resized")
-                return
+    # ------------------------------------------------------------------
+    # Per-mode release handlers (dispatched from on_release)
+    # ------------------------------------------------------------------
 
-            if self.editing_label:
-                self.canvas.delete("label_highlight")
-                self.editing_label = False
-                self.canvas_manager.record_state()
-                self.label_shape = None
-                self.status_bar.config(text="Label repositioned")
-                return
+    def _release_group_move(self, x, y):
+        self.group_dragging = False
+        sel = self.canvas_manager.selected_shapes
+        start_x = self.canvas_manager.drag_data.get("start_x", x)
+        start_y = self.canvas_manager.drag_data.get("start_y", y)
+        if (abs(x - start_x) > 2 or abs(y - start_y) > 2) and sel:
+            # Snap the whole group so the grabbed shape lands on the grid,
+            # preserving every shape's relative position.
+            if self.snap_to_grid and self.group_anchor is not None:
+                sx, sy = self.snap_point(self.group_anchor.x1, self.group_anchor.y1)
+                sdx, sdy = sx - self.group_anchor.x1, sy - self.group_anchor.y1
+                if abs(sdx) > 0.1 or abs(sdy) > 0.1:
+                    self._translate_group(sdx, sdy)
+            self.canvas_manager.record_state()
+            n = len(sel)
+            self.status_bar.config(
+                text=f"Moved {n} object{'s' if n != 1 else ''} (group)")
+        self.group_anchor = None
 
-            if self.editing_segment is not None:
-                self.editing_segment = None
-                self.canvas_manager.record_state()
-                self.status_bar.config(text="Segment moved")
-                return
+    def _release_net_label(self, x, y):
+        if self.editing_net_label is None:
+            return
+        shape = self.editing_net_label
+        self.editing_net_label = None
+        # Re-anchor the label to the wire point nearest to where the
+        # user dropped it (arc-length fraction), so it stays put when
+        # the auto-router later rebuilds the wire.
+        base = self.canvas_manager.net_label_base_point(shape)
+        if base is not None:
+            lx = base[0] + (shape.net_label_dx or 0)
+            ly = base[1] + (shape.net_label_dy or 0)
+            poly = self.canvas_manager.wire_polyline(shape)
+            if len(poly) >= 2:
+                t = self.canvas_manager.project_to_polyline(poly, lx, ly)
+                ax, ay, _ = self.canvas_manager.polyline_point_at(poly, t)
+                shape.net_label_t = t
+                shape.net_label_dx = lx - ax
+                shape.net_label_dy = ly - ay
+        self.canvas_manager.record_state()
+        self.status_bar.config(text="Net label moved")
 
-            if self.editing_waypoint is not None:
-                shape = self.canvas_manager.selected_shape
-                if self.editing_waypoint in ("start", "end") and shape:
-                    # Check for shape snap and update connections
-                    ex = shape.x1 if self.editing_waypoint == "start" else shape.x2
-                    ey = shape.y1 if self.editing_waypoint == "start" else shape.y2
-                    _, _, snap_shape = self.canvas_manager.get_snap_point(ex, ey, shape)
-                    if snap_shape:
-                        shape.connections = [c for c in shape.connections
-                                             if c.get('endpoint') != self.editing_waypoint]
-                        port_name = self.canvas_manager.last_snap_port
-                        shape.connections.append({
-                            'target_id': snap_shape.shape_id,
-                            'endpoint': self.editing_waypoint,
-                            'port_name': port_name
-                        })
-                        self.status_bar.config(
-                            text=f"Connected {self.editing_waypoint} to "
-                                 f"{('pin ' + port_name) if port_name else 'shape'}")
-                    else:
-                        shape.connections = [c for c in shape.connections
-                                             if c.get('endpoint') != self.editing_waypoint]
-                        self.status_bar.config(text="Point moved")
-                    self.canvas.delete("snap_indicator")
-                else:
-                    self.status_bar.config(text="Waypoint moved")
-                self.editing_waypoint = None
-                self.canvas_manager.record_state()
-                return
+    def _release_slice_label(self, x, y):
+        if self.editing_slice_label is None:
+            return
+        self.editing_slice_label = None
+        self.canvas_manager.record_state()
+        self.status_bar.config(text="Slice label moved")
 
-            if self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape:
-                _sel = self.canvas_manager.selected_shape
-                if getattr(_sel, 'annotation', False):
-                    # Annotation arrows never bind; drop any stale connection.
-                    _sel.connections = [c for c in _sel.connections
-                                        if c.get('endpoint') != self.canvas_manager.editing_endpoint]
-                    self.canvas.delete("snap_indicator")
-                    self.canvas_manager.editing_endpoint = None
-                    self.canvas_manager.record_state()
-                    self.file_manager.mark_modified()
-                    return
-                snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
-                    x, y, self.canvas_manager.selected_shape)
-                if not snap_shape and self.snap_to_grid:
-                    snap_x, snap_y = self.snap_point(x, y)
-                if snap_shape:
-                    self.canvas_manager.selected_shape.connections = [
-                        c for c in self.canvas_manager.selected_shape.connections
-                        if c.get('endpoint') != self.canvas_manager.editing_endpoint
-                    ]
-                    port_name = self.canvas_manager.last_snap_port
-                    self.canvas_manager.selected_shape.connections.append({
-                        'target_id': snap_shape.shape_id,
-                        'endpoint': self.canvas_manager.editing_endpoint,
-                        'port_name': port_name
-                    })
-                    self.status_bar.config(
-                        text=f"Connected {self.canvas_manager.editing_endpoint} to "
-                             f"{('pin ' + port_name) if port_name else 'shape'}")
-                else:
-                    self.canvas_manager.selected_shape.connections = [
-                        c for c in self.canvas_manager.selected_shape.connections
-                        if c.get('endpoint') != self.canvas_manager.editing_endpoint
-                    ]
-                self.canvas.delete("snap_indicator")
-                self.canvas_manager.editing_endpoint = None
-                self.canvas_manager.record_state()
-                self.file_manager.mark_modified()
-                return
+    def _release_resize(self, x, y):
+        if not self.resizing_shape:
+            return
+        self.resizing_shape = False
+        self.resize_handle = None
+        self.resize_center = None
+        self.canvas_manager.record_state()
+        self.status_bar.config(text="Shape resized")
 
-            if self.canvas_manager.selected_shape:
-                start_x = self.canvas_manager.drag_data.get("start_x", x)
-                start_y = self.canvas_manager.drag_data.get("start_y", y)
-                if abs(x - start_x) > 2 or abs(y - start_y) > 2:
-                    if self.snap_to_grid:
-                        shape = self.canvas_manager.selected_shape
-                        snapped_x1, snapped_y1 = self.snap_point(shape.x1, shape.y1)
-                        snap_dx = snapped_x1 - shape.x1
-                        snap_dy = snapped_y1 - shape.y1
-                        if abs(snap_dx) > 0.1 or abs(snap_dy) > 0.1:
-                            self.canvas.move(shape.canvas_id, snap_dx, snap_dy)
-                            self.canvas.move("highlight", snap_dx, snap_dy)
-                            self.canvas.move("endpoint_handle", snap_dx, snap_dy)
-                            self.canvas.move("resize_handle", snap_dx, snap_dy)
-                            self.canvas.move(f"ports_{shape.shape_id}", snap_dx, snap_dy)
-                            if shape.label_canvas_id:
-                                self.canvas.move(shape.label_canvas_id, snap_dx, snap_dy)
-                            shape.x1 = snapped_x1;  shape.y1 = snapped_y1
-                            if shape.shape_type == "text":
-                                shape.x2 = snapped_x1;  shape.y2 = snapped_y1
-                            else:
-                                shape.x2 += snap_dx;  shape.y2 += snap_dy
-                            for wp in shape.waypoints:
-                                wp[0] += snap_dx;  wp[1] += snap_dy
-                            self.canvas_manager.update_connected_lines(shape)
-                    self.canvas_manager.record_state()
+    def _release_label(self, x, y):
+        if not self.editing_label:
+            return
+        self.canvas.delete("label_highlight")
+        self.editing_label = False
+        self.canvas_manager.record_state()
+        self.label_shape = None
+        self.status_bar.config(text="Label repositioned")
+
+    def _release_segment(self, x, y):
+        if self.editing_segment is None:
+            return
+        self.editing_segment = None
+        self.canvas_manager.record_state()
+        self.status_bar.config(text="Segment moved")
+
+    def _release_waypoint(self, x, y):
+        if self.editing_waypoint is None:
+            return
+        shape = self.canvas_manager.selected_shape
+        if self.editing_waypoint in ("start", "end") and shape:
+            # Check for shape snap and update connections
+            ex = shape.x1 if self.editing_waypoint == "start" else shape.x2
+            ey = shape.y1 if self.editing_waypoint == "start" else shape.y2
+            _, _, snap_shape = self.canvas_manager.get_snap_point(ex, ey, shape)
+            if snap_shape:
+                shape.connections = [c for c in shape.connections
+                                     if c.get('endpoint') != self.editing_waypoint]
+                port_name = self.canvas_manager.last_snap_port
+                shape.connections.append({
+                    'target_id': snap_shape.shape_id,
+                    'endpoint': self.editing_waypoint,
+                    'port_name': port_name
+                })
+                self.status_bar.config(
+                    text=f"Connected {self.editing_waypoint} to "
+                         f"{('pin ' + port_name) if port_name else 'shape'}")
+            else:
+                shape.connections = [c for c in shape.connections
+                                     if c.get('endpoint') != self.editing_waypoint]
+                self.status_bar.config(text="Point moved")
+            self.canvas.delete("snap_indicator")
         else:
-            if self.current_tool != "text":
-                if self.canvas_manager.temp_shape:
-                    self.canvas.delete(self.canvas_manager.temp_shape)
-                    self.canvas_manager.temp_shape = None
-                shape = self.create_shape(
-                    self.canvas_manager.drag_data["x"],
-                    self.canvas_manager.drag_data["y"],
-                    x, y
-                )
-                if shape:
-                    self.canvas_manager.add_shape(shape)
-                    if shape.shape_type in LINE_TYPES:
-                        self._auto_connect_endpoints(shape)
+            self.status_bar.config(text="Waypoint moved")
+        self.editing_waypoint = None
+        self.canvas_manager.record_state()
+
+    def _release_endpoint(self, x, y):
+        if not (self.canvas_manager.editing_endpoint and self.canvas_manager.selected_shape):
+            return
+        _sel = self.canvas_manager.selected_shape
+        if getattr(_sel, 'annotation', False):
+            # Annotation arrows never bind; drop any stale connection.
+            _sel.connections = [c for c in _sel.connections
+                                if c.get('endpoint') != self.canvas_manager.editing_endpoint]
+            self.canvas.delete("snap_indicator")
+            self.canvas_manager.editing_endpoint = None
+            self.canvas_manager.record_state()
+            self.file_manager.mark_modified()
+            return
+        snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
+            x, y, self.canvas_manager.selected_shape)
+        if not snap_shape and self.snap_to_grid:
+            snap_x, snap_y = self.snap_point(x, y)
+        if snap_shape:
+            self.canvas_manager.selected_shape.connections = [
+                c for c in self.canvas_manager.selected_shape.connections
+                if c.get('endpoint') != self.canvas_manager.editing_endpoint
+            ]
+            port_name = self.canvas_manager.last_snap_port
+            self.canvas_manager.selected_shape.connections.append({
+                'target_id': snap_shape.shape_id,
+                'endpoint': self.canvas_manager.editing_endpoint,
+                'port_name': port_name
+            })
+            self.status_bar.config(
+                text=f"Connected {self.canvas_manager.editing_endpoint} to "
+                     f"{('pin ' + port_name) if port_name else 'shape'}")
+        else:
+            self.canvas_manager.selected_shape.connections = [
+                c for c in self.canvas_manager.selected_shape.connections
+                if c.get('endpoint') != self.canvas_manager.editing_endpoint
+            ]
+        self.canvas.delete("snap_indicator")
+        self.canvas_manager.editing_endpoint = None
+        self.canvas_manager.record_state()
+        self.file_manager.mark_modified()
+
+    def _release_move(self, x, y):
+        if not self.canvas_manager.selected_shape:
+            return
+        start_x = self.canvas_manager.drag_data.get("start_x", x)
+        start_y = self.canvas_manager.drag_data.get("start_y", y)
+        if abs(x - start_x) > 2 or abs(y - start_y) > 2:
+            if self.snap_to_grid:
+                shape = self.canvas_manager.selected_shape
+                snapped_x1, snapped_y1 = self.snap_point(shape.x1, shape.y1)
+                snap_dx = snapped_x1 - shape.x1
+                snap_dy = snapped_y1 - shape.y1
+                if abs(snap_dx) > 0.1 or abs(snap_dy) > 0.1:
+                    self.canvas.move(shape.canvas_id, snap_dx, snap_dy)
+                    self.canvas.move("highlight", snap_dx, snap_dy)
+                    self.canvas.move("endpoint_handle", snap_dx, snap_dy)
+                    self.canvas.move("resize_handle", snap_dx, snap_dy)
+                    self.canvas.move(f"ports_{shape.shape_id}", snap_dx, snap_dy)
+                    if shape.label_canvas_id:
+                        self.canvas.move(shape.label_canvas_id, snap_dx, snap_dy)
+                    shape.x1 = snapped_x1;  shape.y1 = snapped_y1
+                    if shape.shape_type == "text":
+                        shape.x2 = snapped_x1;  shape.y2 = snapped_y1
+                    else:
+                        shape.x2 += snap_dx;  shape.y2 += snap_dy
+                    for wp in shape.waypoints:
+                        wp[0] += snap_dx;  wp[1] += snap_dy
+                    self.canvas_manager.update_connected_lines(shape)
+            self.canvas_manager.record_state()
+
+    def _release_draw(self, x, y):
+        if self.current_tool == "text":
+            return
+        if self.canvas_manager.temp_shape:
+            self.canvas.delete(self.canvas_manager.temp_shape)
+            self.canvas_manager.temp_shape = None
+        shape = self.create_shape(
+            self.canvas_manager.drag_data["x"],
+            self.canvas_manager.drag_data["y"],
+            x, y
+        )
+        if shape:
+            self.canvas_manager.add_shape(shape)
+            if shape.shape_type in LINE_TYPES:
+                self._auto_connect_endpoints(shape)
 
     def _auto_connect_endpoints(self, line_shape):
         """When a wire is first drawn, bind either endpoint that lands on a
@@ -1834,10 +1940,15 @@ class DrawingApp:
                    command=lambda: self.ui_rename_sheet(cm.active_sheet)).pack(side=tk.LEFT, padx=1)
         ttk.Button(self.sheet_bar, text="Delete", width=7,
                    command=lambda: self.ui_delete_sheet(cm.active_sheet)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(self.sheet_bar, text="◀ Move", width=7,
+                   command=lambda: self.ui_move_sheet(-1)).pack(side=tk.LEFT, padx=(8, 1))
+        ttk.Button(self.sheet_bar, text="Move ▶", width=7,
+                   command=lambda: self.ui_move_sheet(1)).pack(side=tk.LEFT, padx=1)
         ttk.Button(self.sheet_bar, text="Title…", width=7,
                    command=self.ui_edit_package_title).pack(side=tk.RIGHT, padx=1)
 
     def ui_switch_sheet(self, i):
+        self._reset_interaction_state()
         self.canvas_manager.switch_sheet(i)
         self.status_bar.config(
             text=f"Switched to {self.canvas_manager.sheets[i]['name']}")
@@ -1845,6 +1956,17 @@ class DrawingApp:
     def ui_add_sheet(self):
         self.canvas_manager.add_sheet()
         self.status_bar.config(text="Added sheet")
+
+    def ui_move_sheet(self, delta):
+        cm = self.canvas_manager
+        i = cm.active_sheet
+        j = i + delta
+        if not (0 <= j < len(cm.sheets)):
+            return
+        self._reset_interaction_state()
+        if cm.move_sheet(i, j):
+            self.status_bar.config(
+                text=f"Moved '{cm.sheets[j]['name']}' to position {j + 1} of {len(cm.sheets)}")
 
     def ui_rename_sheet(self, i):
         cur = self.canvas_manager.sheets[i]['name']
@@ -2156,567 +2278,3 @@ class DrawingApp:
         self.canvas_manager.redraw_shape(shape)
         self.canvas_manager.record_state()
         self.status_bar.config(text="Wire re-routed automatically")
-
-
-# ============================================================================
-# Dialogs
-# ============================================================================
-
-class LabelInputDialog:
-    def __init__(self, parent, title, initial_text=""):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(title)
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.geometry("350x150")
-
-        f = ttk.Frame(self.dialog, padding=20)
-        f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text="Label Text:").pack(anchor=tk.W, pady=(0, 5))
-        self.entry = ttk.Entry(f, width=40)
-        self.entry.pack(fill=tk.X, pady=(0, 15))
-        self.entry.insert(0, initial_text)
-        self.entry.focus()
-        self.entry.select_range(0, tk.END)
-
-        bf = ttk.Frame(f)
-        bf.pack(fill=tk.X)
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-        ttk.Button(bf, text="Remove Label", command=self.remove_clicked).pack(side=tk.LEFT)
-        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
-        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
-        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def ok_clicked(self):
-        self.result = self.entry.get().strip()
-        self.dialog.destroy()
-
-    def remove_clicked(self):
-        self.result = ""
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class SheetSizeDialog:
-    """Custom sheet width/height entry (canvas pixel units)."""
-
-    def __init__(self, parent, title, current_w, current_h):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(title)
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.geometry("320x180")
-
-        f = ttk.Frame(self.dialog, padding=20)
-        f.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(f, text="Width (px):").grid(row=0, column=0, sticky=tk.W, pady=6)
-        self.width_var = tk.IntVar(value=current_w)
-        ttk.Spinbox(f, from_=200, to=10000, increment=50, width=12,
-                   textvariable=self.width_var).grid(row=0, column=1, sticky=tk.W, padx=8)
-
-        ttk.Label(f, text="Height (px):").grid(row=1, column=0, sticky=tk.W, pady=6)
-        self.height_var = tk.IntVar(value=current_h)
-        ttk.Spinbox(f, from_=200, to=10000, increment=50, width=12,
-                   textvariable=self.height_var).grid(row=1, column=1, sticky=tk.W, padx=8)
-
-        ttk.Label(f, text="(1 px ≈ 1/100 inch at default zoom)",
-                 font=("Arial", 8), foreground="#666666"
-                 ).grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=(4, 0))
-
-        bf = ttk.Frame(f)
-        bf.grid(row=3, column=0, columnspan=2, sticky=tk.E, pady=(16, 0))
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-
-        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
-        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
-        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def ok_clicked(self):
-        try:
-            w = max(200, int(self.width_var.get()))
-            h = max(200, int(self.height_var.get()))
-            self.result = (w, h)
-        except (ValueError, tk.TclError):
-            self.result = None
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class NoteStyleDialog:
-    """Choose an annotation line dash pattern + width, with a live preview."""
-
-    def __init__(self, parent, initial_pattern="dashed", initial_width=2):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title("Annotation Line Style")
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-
-        f = ttk.Frame(self.dialog, padding=14)
-        f.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(f, text="Style:").grid(row=0, column=0, sticky=tk.W, pady=4)
-        self.pattern_var = tk.StringVar(
-            value=DASH_LABELS.get(initial_pattern, "Dashed"))
-        self._label_to_key = {v: k for k, v in DASH_LABELS.items()}
-        ttk.Combobox(f, textvariable=self.pattern_var, width=14, state="readonly",
-                     values=[DASH_LABELS[k] for k in DASH_ORDER]).grid(
-                     row=0, column=1, sticky=tk.W, padx=6)
-
-        ttk.Label(f, text="Width:").grid(row=1, column=0, sticky=tk.W, pady=4)
-        self.width_var = tk.IntVar(value=max(1, int(initial_width)))
-        ttk.Spinbox(f, from_=1, to=10, width=6, textvariable=self.width_var).grid(
-            row=1, column=1, sticky=tk.W, padx=6)
-
-        self.preview = tk.Canvas(f, width=240, height=40, bg="white",
-                                 highlightthickness=1, highlightbackground="#bbb")
-        self.preview.grid(row=2, column=0, columnspan=2, pady=(10, 0))
-
-        bf = ttk.Frame(f)
-        bf.grid(row=3, column=0, columnspan=2, sticky=tk.E, pady=(12, 0))
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-
-        self.pattern_var.trace_add("write", lambda *_: self._draw_preview())
-        self.width_var.trace_add("write", lambda *_: self._draw_preview())
-        self._draw_preview()
-
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def _key(self):
-        return self._label_to_key.get(self.pattern_var.get(), "dashed")
-
-    def _draw_preview(self):
-        self.preview.delete("all")
-        try:
-            w = max(1, int(self.width_var.get()))
-        except (tk.TclError, ValueError):
-            w = 2
-        dash = DASH_PATTERNS.get(self._key(), ())
-        self.preview.create_line(16, 20, 224, 20, fill="black", width=w,
-                                 dash=dash if dash else ())
-
-    def ok_clicked(self):
-        try:
-            w = max(1, int(self.width_var.get()))
-        except (tk.TclError, ValueError):
-            w = 2
-        self.result = (self._key(), w)
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class PinRangeDialog:
-    """Prompt for a numbered pin range (prefix + start..end, optional zero-pad)."""
-
-    def __init__(self, parent, initial_prefix="", initial_side="Left", sides=None):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title("Add Pin Range")
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-
-        f = ttk.Frame(self.dialog, padding=14)
-        f.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(f, text="Prefix:").grid(row=0, column=0, sticky=tk.W, pady=3)
-        self.prefix_var = tk.StringVar(value=initial_prefix)
-        pe = ttk.Entry(f, textvariable=self.prefix_var, width=16)
-        pe.grid(row=0, column=1, columnspan=3, sticky=tk.W, padx=4)
-
-        ttk.Label(f, text="Start:").grid(row=1, column=0, sticky=tk.W, pady=3)
-        self.start_var = tk.IntVar(value=1)
-        ttk.Spinbox(f, from_=0, to=9999, textvariable=self.start_var,
-                    width=6).grid(row=1, column=1, sticky=tk.W, padx=4)
-        ttk.Label(f, text="End:").grid(row=1, column=2, sticky=tk.W, padx=(10, 0))
-        self.end_var = tk.IntVar(value=16)
-        ttk.Spinbox(f, from_=0, to=9999, textvariable=self.end_var,
-                    width=6).grid(row=1, column=3, sticky=tk.W, padx=4)
-
-        ttk.Label(f, text="Zero-pad width:").grid(row=2, column=0, columnspan=2,
-                                                  sticky=tk.W, pady=3)
-        self.pad_var = tk.IntVar(value=0)
-        ttk.Spinbox(f, from_=0, to=6, textvariable=self.pad_var,
-                    width=6).grid(row=2, column=2, sticky=tk.W, padx=4)
-
-        ttk.Label(f, text="Side:").grid(row=3, column=0, sticky=tk.W, pady=3)
-        self.side_var = tk.StringVar(value=initial_side)
-        ttk.Combobox(f, textvariable=self.side_var, width=8, state="readonly",
-                     values=sides or ["Left", "Right", "Top", "Bottom"]
-                     ).grid(row=3, column=1, columnspan=2, sticky=tk.W, padx=4)
-
-        self.preview_var = tk.StringVar()
-        ttk.Label(f, textvariable=self.preview_var, foreground="#1f6fc2").grid(
-            row=4, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
-
-        bf = ttk.Frame(f)
-        bf.grid(row=5, column=0, columnspan=4, sticky=tk.E, pady=(12, 0))
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-
-        for v in (self.prefix_var, self.start_var, self.end_var, self.pad_var):
-            v.trace_add("write", lambda *_: self._update_preview())
-        self._update_preview()
-
-        pe.focus_set()
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def _read(self):
-        prefix = self.prefix_var.get().strip()
-        try:
-            start = int(self.start_var.get()); end = int(self.end_var.get())
-            pad = max(0, int(self.pad_var.get()))
-        except (tk.TclError, ValueError):
-            return None
-        return prefix, start, end, pad
-
-    def _names(self, limit=None):
-        r = self._read()
-        if not r:
-            return []
-        prefix, start, end, pad = r
-        step = 1 if end >= start else -1
-        names = []
-        for n in range(start, end + step, step):
-            num = str(abs(n)).zfill(pad) if pad else str(n)
-            names.append(f"{prefix}{num}")
-            if limit and len(names) >= limit:
-                break
-        return names
-
-    def _update_preview(self):
-        names = self._names()
-        if not names:
-            self.preview_var.set("")
-            return
-        shown = self._names(limit=3)
-        txt = ", ".join(shown)
-        if len(names) > 3:
-            txt += f", …, {names[-1]}"
-        self.preview_var.set(f"{len(names)} pin(s):  {txt}")
-
-    def ok_clicked(self):
-        r = self._read()
-        if not r:
-            messagebox.showinfo("Add Range", "Enter valid start/end numbers.", parent=self.dialog)
-            return
-        prefix, start, end, pad = r
-        if not prefix:
-            messagebox.showinfo("Add Range", "Enter a prefix (e.g. io).", parent=self.dialog)
-            return
-        if abs(end - start) + 1 > 256:
-            messagebox.showinfo("Add Range", "Range too large (max 256 pins).", parent=self.dialog)
-            return
-        self.result = (prefix, start, end, pad, self.side_var.get())
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class PortEditorDialog:
-    """Add / remove named pins on a block shape."""
-    SIDES = [("Left", "L"), ("Right", "R"), ("Top", "T"), ("Bottom", "B")]
-
-    def __init__(self, parent, title, ports):
-        self.result = None
-        self.ports = [dict(p) for p in ports]
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(title)
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.geometry("480x430")
-
-        f = ttk.Frame(self.dialog, padding=12)
-        f.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(f, text="Pins (name — side):").pack(anchor=tk.W)
-        self.listbox = tk.Listbox(f, height=10)
-        self.listbox.pack(fill=tk.BOTH, expand=True, pady=(4, 8))
-        self.listbox.bind("<Double-Button-1>", lambda e: self.rename_port())
-
-        addf = ttk.Frame(f)
-        addf.pack(fill=tk.X)
-        ttk.Label(addf, text="Name:").pack(side=tk.LEFT)
-        self.name_var = tk.StringVar()
-        entry = ttk.Entry(addf, textvariable=self.name_var, width=14)
-        entry.pack(side=tk.LEFT, padx=4)
-        entry.bind("<Return>", lambda e: self.add_port())
-        ttk.Label(addf, text="Side:").pack(side=tk.LEFT)
-        self.side_var = tk.StringVar(value="Left")
-        ttk.Combobox(addf, textvariable=self.side_var, width=8, state="readonly",
-                     values=[s[0] for s in self.SIDES]).pack(side=tk.LEFT, padx=4)
-        ttk.Button(addf, text="Add", command=self.add_port).pack(side=tk.LEFT, padx=2)
-        ttk.Button(addf, text="Add Range…", command=self.add_range).pack(side=tk.LEFT, padx=2)
-
-        editf = ttk.Frame(f)
-        editf.pack(fill=tk.X, pady=6)
-        ttk.Button(editf, text="Rename", command=self.rename_port).pack(side=tk.LEFT)
-        ttk.Button(editf, text="Move Up", command=lambda: self.move_port(-1)).pack(side=tk.LEFT, padx=4)
-        ttk.Button(editf, text="Move Down", command=lambda: self.move_port(1)).pack(side=tk.LEFT)
-        ttk.Button(editf, text="Remove", command=self.remove_port).pack(side=tk.RIGHT)
-
-        bf = ttk.Frame(f)
-        bf.pack(fill=tk.X, side=tk.BOTTOM)
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-
-        self.refresh()
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def _side_code(self, label):
-        return dict(self.SIDES).get(label, "L")
-
-    def _side_label(self, code):
-        return {c: l for l, c in self.SIDES}.get(code, "Left")
-
-    def refresh(self):
-        self.listbox.delete(0, tk.END)
-        for p in self.ports:
-            self.listbox.insert(tk.END, f"{p['name']}  —  {self._side_label(p.get('side', 'L'))}")
-
-    def add_port(self):
-        name = self.name_var.get().strip()
-        if not name:
-            return
-        if any(p['name'] == name for p in self.ports):
-            messagebox.showinfo("Duplicate", f"A pin named '{name}' already exists.")
-            return
-        self.ports.append({'name': name, 'side': self._side_code(self.side_var.get()),
-                           'direction': 'inout'})
-        self.name_var.set("")
-        self.refresh()
-
-    def add_range(self):
-        """Bulk-add a numbered sequence of pins, e.g. io1..io16."""
-        base = self.name_var.get().strip()
-        dlg = PinRangeDialog(self.dialog, initial_prefix=base,
-                             initial_side=self.side_var.get(),
-                             sides=[s[0] for s in self.SIDES])
-        if dlg.result is None:
-            return
-        prefix, start, end, pad, side_label = dlg.result
-        side = self._side_code(side_label)
-        step = 1 if end >= start else -1
-        existing = {p['name'] for p in self.ports}
-        added, skipped = 0, 0
-        for n in range(start, end + step, step):
-            num = str(abs(n)).zfill(pad) if pad else str(n)
-            name = f"{prefix}{num}"
-            if name in existing:
-                skipped += 1
-                continue
-            self.ports.append({'name': name, 'side': side, 'direction': 'inout'})
-            existing.add(name)
-            added += 1
-        self.name_var.set("")
-        self.refresh()
-        if skipped:
-            messagebox.showinfo(
-                "Add Range",
-                f"Added {added} pin(s); skipped {skipped} duplicate name(s).")
-
-    def rename_port(self):
-        sel = self.listbox.curselection()
-        if not sel:
-            messagebox.showinfo("No Selection", "Select a pin to rename.")
-            return
-        i = sel[0]
-        old = self.ports[i]['name']
-        new = simpledialog.askstring("Rename Pin", "New pin name:",
-                                     initialvalue=old, parent=self.dialog)
-        if new is None:
-            return
-        new = new.strip()
-        if not new or new == old:
-            return
-        if any(j != i and p['name'] == new for j, p in enumerate(self.ports)):
-            messagebox.showinfo("Duplicate", f"A pin named '{new}' already exists.")
-            return
-        self.ports[i]['name'] = new
-        self.refresh()
-        self.listbox.selection_set(i)
-
-    def move_port(self, delta):
-        """Move the selected pin up/down relative to other pins on its SAME edge."""
-        sel = self.listbox.curselection()
-        if not sel:
-            messagebox.showinfo("No Selection", "Select a pin to move.")
-            return
-        i = sel[0]
-        side = self.ports[i].get('side', 'L')
-        # Find the nearest pin on the same side in the move direction.
-        j = i + delta
-        while 0 <= j < len(self.ports):
-            if self.ports[j].get('side', 'L') == side:
-                break
-            j += delta
-        if not (0 <= j < len(self.ports)):
-            return  # already first/last on this edge
-        self.ports[i], self.ports[j] = self.ports[j], self.ports[i]
-        self.refresh()
-        self.listbox.selection_set(j)
-
-    def remove_port(self):
-        sel = self.listbox.curselection()
-        if sel:
-            del self.ports[sel[0]]
-            self.refresh()
-
-    def ok_clicked(self):
-        self.result = self.ports
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class SpecialPinsDialog:
-    """Toggle standard optional pins (en/set/rst/clr...) on a primitive.
-
-    Each spec has a FIXED side, so the user only chooses which pins exist;
-    placement is automatic. Checking a pin adds it; unchecking removes it.
-    """
-    SIDE_WORD = {'T': 'top', 'B': 'bottom', 'L': 'left', 'R': 'right'}
-
-    def __init__(self, parent, title, specs, existing_names):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(title)
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.resizable(False, False)
-
-        f = ttk.Frame(self.dialog, padding=14)
-        f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text="Enable optional pins:").pack(anchor=tk.W, pady=(0, 8))
-
-        self.vars = {}
-        for spec in specs:
-            name = spec['name']
-            var = tk.BooleanVar(value=name in existing_names)
-            self.vars[name] = var
-            word = self.SIDE_WORD.get(spec.get('side', 'L'), 'left')
-            ttk.Checkbutton(f, text=f"{name}  \u2014  {word} edge",
-                            variable=var).pack(anchor=tk.W, pady=2)
-
-        bf = ttk.Frame(f)
-        bf.pack(fill=tk.X, pady=(12, 0))
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
-        parent.wait_window(self.dialog)
-
-    def ok_clicked(self):
-        self.result = {name: var.get() for name, var in self.vars.items()}
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
-
-
-class TextInputDialog:
-    def __init__(self, parent, title, x, y, initial_text="", initial_font="Arial",
-                 initial_size=12, initial_bold=False, initial_italic=False,
-                 initial_align="left"):
-        self.result = None
-        self.dialog = tk.Toplevel(parent)
-        self.dialog.title(title)
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        self.dialog.geometry("420x350")
-
-        f = ttk.Frame(self.dialog, padding=10)
-        f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text="Text  (Enter = new line, Ctrl+Enter = OK):").grid(
-            row=0, column=0, columnspan=3, sticky=tk.W, pady=5)
-
-        tf = ttk.Frame(f)
-        tf.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
-        self.text_widget = tk.Text(tf, height=5, width=40, wrap=tk.WORD)
-        self.text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.text_widget.insert("1.0", initial_text)
-        self.text_widget.focus()
-        sb = ttk.Scrollbar(tf, command=self.text_widget.yview)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        self.text_widget.config(yscrollcommand=sb.set)
-
-        ttk.Label(f, text="Font:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        self.font_family = tk.StringVar(value=initial_font)
-        ttk.Combobox(f, textvariable=self.font_family, width=15,
-                     values=["Arial", "Times New Roman", "Courier New",
-                             "Helvetica", "Verdana", "Georgia", "Comic Sans MS"]
-                     ).grid(row=2, column=1, sticky=tk.W, pady=5, padx=5)
-
-        ttk.Label(f, text="Size:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.font_size = tk.IntVar(value=initial_size)
-        ttk.Spinbox(f, from_=8, to=72, textvariable=self.font_size, width=10
-                    ).grid(row=3, column=1, sticky=tk.W, pady=5, padx=5)
-
-        sf = ttk.Frame(f)
-        sf.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=5)
-        self.font_bold = tk.BooleanVar(value=initial_bold)
-        ttk.Checkbutton(sf, text="Bold", variable=self.font_bold).pack(side=tk.LEFT, padx=5)
-        self.font_italic = tk.BooleanVar(value=initial_italic)
-        ttk.Checkbutton(sf, text="Italic", variable=self.font_italic).pack(side=tk.LEFT, padx=5)
-
-        af = ttk.Frame(f)
-        af.grid(row=5, column=0, columnspan=3, sticky=tk.W, pady=5)
-        ttk.Label(af, text="Align:").pack(side=tk.LEFT, padx=(0, 6))
-        self.text_align = tk.StringVar(value=initial_align or "left")
-        for _lbl, _val in (("Left", "left"), ("Center", "center"), ("Right", "right")):
-            ttk.Radiobutton(af, text=_lbl, value=_val,
-                            variable=self.text_align).pack(side=tk.LEFT, padx=4)
-
-        bf = ttk.Frame(self.dialog, padding=10)
-        bf.pack(fill=tk.X)
-        ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
-        ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-        # Enter inserts a newline in the multi-line box; Ctrl+Enter accepts.
-        self.dialog.bind("<Control-Return>", lambda e: self.ok_clicked())
-        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
-        self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
-        parent.wait_window(self.dialog)
-
-    def ok_clicked(self):
-        text = self.text_widget.get("1.0", "end-1c").strip()
-        if text:
-            self.result = {'text': text, 'font_family': self.font_family.get(),
-                           'font_size': self.font_size.get(), 'font_bold': self.font_bold.get(),
-                           'font_italic': self.font_italic.get(),
-                           'text_align': self.text_align.get()}
-        self.dialog.destroy()
-
-    def cancel_clicked(self):
-        self.result = None
-        self.dialog.destroy()
