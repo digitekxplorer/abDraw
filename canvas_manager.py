@@ -2,7 +2,72 @@
 # FILE: canvas_manager.py
 # ============================================================================
 """
-Canvas operations and shape management
+Canvas operations and shape management.
+
+This module currently has THREE responsibilities (candidate for a future
+split; see CLAUDE.md "structural improvements"):
+
+  1. RENDERING   — draw_shape / draw_ports / draw_wire_deco, highlights,
+                   junction dots, DRC rings, title block.
+  2. THE ROUTER  — the orthogonal wire auto-router (see map below).
+  3. DOCUMENT    — sheets, undo/redo, clipboard, netlist, selection state.
+
+========================  ORTHOGONAL ROUTER MAP  ========================
+
+Ownership rule: ANY wire with a pinned end is owned by the auto-router and
+is rebuilt from its endpoints on every connected-component move, so wires
+always enter/exit a pin PERPENDICULAR to its edge. Manual routing is the
+exception, gated by _honor_waypoints().
+
+Entry points (called from outside the router):
+  ortho_points(shape)        -> full drawn point list for an ortho wire,
+                                including staggered pin approaches. THE
+                                router entry; called by wire_polyline and
+                                draw_shape.
+  wire_polyline(shape)       -> drawn points for ANY wire type (straight
+                                or ortho), deduplicated. Used by rendering,
+                                junctions, hit-testing, net labels, export.
+  update_connected_lines(s)  -> re-pins + reroutes every wire bound to a
+                                moved/resized block.
+
+Internals (call graph, top-down):
+  ortho_points
+    -> _honor_waypoints      manual-route gate: user_routed (dragged or
+                             inserted a waypoint) is ALWAYS honored;
+                             manual_route (click-bends while drawing) is
+                             honored as drawn until a connected component
+                             MOVES, then released to the auto-router.
+    -> _approach_point       staggered turn point(s) just outside a pin:
+                             [tip] for a lone wire / both-ends-pinned wire,
+                             [corner, tip] when 2+ wires share a side.
+                             Off-page connectors return None (plain
+                             terminals).
+       -> _resolve_pin       (side, port_name, anchor) for an endpoint;
+                             falls back to nearest pin if port_name was
+                             never stored.
+       -> _side_channel      this endpoint's rank among all wires bound to
+                             the same side of the target -> distinct
+                             approach channels so risers don't overlap.
+       -> _hyst              hysteretic comparisons so fan ordering doesn't
+                             flip-flop as a block passes level with its
+                             source.
+    -> _end_has_pin_approach mirrors _approach_point's resolution so BOTH
+                             ends of a wire are classified consistently
+                             (prevents one-ended "clean elbow" zigzags).
+
+Invariants (do not break):
+  * A wire endpoint bound to a pin must leave that pin perpendicular to
+    the pin's edge for at least the lead length.
+  * Two wires bound to the same side of the same block must use distinct
+    approach channels (no overlapping risers).
+  * user_routed=True waypoints are never discarded by the router; only
+    "Auto-Route Wire" (which clears the flag) releases them.
+  * Mux T/B pins ride the SLANTED trapezoid edge (computed from inset +
+    the pin's fractional x), not the bounding box.
+  * wire_polyline is the single source of wire geometry for rendering,
+    junctions, net labels, AND file_manager's PNG/PDF export — keep them
+    in sync by changing geometry HERE, never in the consumers.
+=========================================================================
 """
 import tkinter as tk
 import math
@@ -137,6 +202,11 @@ class CanvasManager:
                     result.append([curr[0], prev[1]])
             result.append(curr)
         return result
+
+    # ==================================================================
+    # ORTHOGONAL ROUTER — internals. See the module docstring for the
+    # call-graph map and invariants before editing anything below.
+    # ==================================================================
 
     def _hyst(self, key, value, band):
         """Hysteretic boolean: flip to True only once value rises above +band
@@ -364,6 +434,10 @@ class CanvasManager:
     # Shape lifecycle
     # ------------------------------------------------------------------
 
+    # ==================================================================
+    # END ROUTER — rendering + document state below.
+    # ==================================================================
+
     def add_shape(self, shape, record_undo=True):
         if shape.shape_id == 0:
             shape.shape_id = self.next_shape_id
@@ -550,13 +624,65 @@ class CanvasManager:
         _, _, ux, uy = tap
         return (-uy * d, -d)
 
+    @staticmethod
+    def polyline_point_at(poly, t):
+        """(x, y, horiz) at arc-length fraction t (0..1) along a polyline."""
+        total = 0.0
+        seglens = []
+        for i in range(len(poly) - 1):
+            L = math.hypot(poly[i + 1][0] - poly[i][0], poly[i + 1][1] - poly[i][1])
+            seglens.append(L)
+            total += L
+        if total <= 0:
+            x, y = poly[0]
+            return x, y, True
+        target = max(0.0, min(1.0, t)) * total
+        run = 0.0
+        for i, L in enumerate(seglens):
+            if run + L >= target or i == len(seglens) - 1:
+                f = (target - run) / L if L > 0 else 0.0
+                ax, ay = poly[i]
+                bx, by = poly[i + 1]
+                horiz = abs(bx - ax) >= abs(by - ay)
+                return ax + (bx - ax) * f, ay + (by - ay) * f, horiz
+            run += L
+        x, y = poly[-1]
+        return x, y, True
+
+    @staticmethod
+    def project_to_polyline(poly, px, py):
+        """Arc-length fraction t (0..1) of the point on the polyline nearest
+        to (px, py)."""
+        total = 0.0
+        best_d2, best_t = None, 0.0
+        run = 0.0
+        for i in range(len(poly) - 1):
+            ax, ay = poly[i]
+            bx, by = poly[i + 1]
+            vx, vy = bx - ax, by - ay
+            L2 = vx * vx + vy * vy
+            L = math.sqrt(L2)
+            f = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+            qx, qy = ax + vx * f, ay + vy * f
+            d2 = (px - qx) ** 2 + (py - qy) ** 2
+            if best_d2 is None or d2 < best_d2:
+                best_d2, best_t = d2, run + L * f
+            run += L
+            total += L
+        return (best_t / total) if total > 0 else 0.0
+
     def net_label_base_point(self, shape):
-        """(mx, my, horiz) — midpoint of the wire's longest segment, and
-        whether that segment is horizontal. Returns None if the wire has
+        """(mx, my, horiz) — the net label's anchor on the wire. A dragged
+        label stores an arc-length fraction (net_label_t) so it stays put
+        when the auto-router rebuilds the wire; otherwise the anchor is the
+        midpoint of the longest segment. Returns None if the wire has
         fewer than 2 points."""
         poly = self.wire_polyline(shape)
         if len(poly) < 2:
             return None
+        t = getattr(shape, 'net_label_t', None)
+        if t is not None:
+            return self.polyline_point_at(poly, t)
         best, blen = (poly[0], poly[1]), -1.0
         for i in range(len(poly) - 1):
             a, b = poly[i], poly[i + 1]
@@ -830,6 +956,31 @@ class CanvasManager:
             if hasattr(self.app, 'refresh_sheet_tabs'):
                 self.app.refresh_sheet_tabs()
             self.app.file_manager.mark_modified()
+
+    def move_sheet(self, index, new_index):
+        """Reorder a sheet within the package. The SAME sheet stays active
+        (its index follows the move); undo history is preserved since no
+        sheet content changes."""
+        n = len(self.sheets)
+        if not (0 <= index < n) or not (0 <= new_index < n) or index == new_index:
+            return False
+        # The active sheet lives in self.shapes; keep its record in sync first.
+        self.commit_active()
+        sheet = self.sheets.pop(index)
+        self.sheets.insert(new_index, sheet)
+        a = self.active_sheet
+        if a == index:
+            a = new_index
+        elif index < a <= new_index:
+            a -= 1
+        elif new_index <= a < index:
+            a += 1
+        self.active_sheet = a
+        self.draw_title_block()
+        if hasattr(self.app, 'refresh_sheet_tabs'):
+            self.app.refresh_sheet_tabs()
+        self.app.file_manager.mark_modified()
+        return True
 
     def set_sheet_size(self, index, width, height):
         """Set page width/height (in canvas pixels) for one sheet."""
