@@ -550,7 +550,10 @@ class TextInputDialog:
         bf.pack(fill=tk.X)
         ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        # Plain Enter inserts a newline in the multi-line Text widget; use
+        # Ctrl+Enter to accept the dialog. (A dialog-wide <Return> bind would
+        # dismiss the dialog on every newline.)
+        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
         self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
         parent.wait_window(self.dialog)
 
