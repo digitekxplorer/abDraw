@@ -186,6 +186,7 @@ class DrawingApp:
         edit_menu.add_command(label="Net Label...", command=self.edit_net_label_of_selected, accelerator="Ctrl+Shift+N")
         edit_menu.add_command(label="Net Label Distance...", command=self.ui_set_net_label_distance)
         edit_menu.add_command(label="Rotate Connector Port", command=self.rotate_connector_of_selected, accelerator="Ctrl+R")
+        edit_menu.add_command(label="Rename Connector...", command=self.rename_connector_of_selected)
         edit_menu.add_command(label="Auto-Route Wire", command=self.auto_route_selected)
         edit_menu.add_separator()
         edit_menu.add_command(label="Select All", command=self.select_all, accelerator="Ctrl+A")
@@ -1370,6 +1371,10 @@ class DrawingApp:
                         self.edit_text_shape(shape)
                         return
                     if (shape.canvas_id == item
+                            and shape.shape_type in ("connector", "connector_on")):
+                        self.rename_connector(shape)
+                        return
+                    if (shape.canvas_id == item
                             and shape.shape_type in ("ortho_line", "ortho_arrow")):
                         self.insert_waypoint_at(shape, x, y)
                         return
@@ -2211,6 +2216,38 @@ class DrawingApp:
             if getattr(s, 'slice_label', None) and s.slice_label_dx is None:
                 self.canvas_manager.redraw_shape(s)
         self.status_bar.config(text=f"Default bit-slice label distance: {val}px")
+
+    def rename_connector_of_selected(self):
+        shape = self.canvas_manager.selected_shape
+        if not shape or shape.shape_type not in ("connector", "connector_on"):
+            self.status_bar.config(
+                text="Select an on-page or off-page connector first to rename it.")
+            return
+        self.rename_connector(shape)
+
+    def rename_connector(self, shape):
+        """Prompt for a new connector name. Same name = same node
+        (across sheets for off-page, on this sheet for on-page)."""
+        on_page = shape.shape_type == "connector_on"
+        title = "On-Page Connector" if on_page else "Off-Page Connector"
+        prompt = ("Connector name (same name = same node on THIS sheet):"
+                  if on_page else
+                  "Connector name (same name = same node, including across sheets):")
+        current = getattr(shape, "conn_name", None) or ""
+        name = simpledialog.askstring(title, prompt, initialvalue=current,
+                                      parent=self.root)
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            self.status_bar.config(text="Connector name cannot be blank — unchanged.")
+            return
+        shape.conn_name = name
+        self.canvas_manager.redraw_shape(shape)
+        self.canvas_manager.record_state()
+        self.file_manager.mark_modified()
+        kind = "on-page" if on_page else "off-page"
+        self.status_bar.config(text=f"Renamed {kind} connector to '{name}'")
 
     def edit_net_label_of_selected(self):
         shape = self.canvas_manager.selected_shape
