@@ -33,6 +33,11 @@
 # 07/03/2026 - Sheet reordering: ◀ Move / Move ▶ buttons shift the active
 #              sheet within the package; the sheet stays active, the title
 #              block's "Sheet N of M" updates, order persists on save/load
+# 07/08/2026 - Text dialog: plain Enter now inserts a newline (was dismissing
+#              the dialog); Ctrl+Enter accepts. Escape still cancels
+# 07/08/2026 - Rename connectors: double-click an on/off-page connector, or
+#              Edit > Rename Connector..., to change its name (same name =
+#              same node); pre-fills current name, undoable
 #
 # ============================================================================
 # File structure for your project:
