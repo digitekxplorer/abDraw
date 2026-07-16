@@ -167,6 +167,7 @@ class DrawingApp:
         edit_menu.add_separator()
         edit_menu.add_command(label="Copy", command=self.canvas_manager.copy_shape, accelerator="Ctrl+C")
         edit_menu.add_command(label="Paste", command=self.canvas_manager.paste_shape, accelerator="Ctrl+V")
+        edit_menu.add_command(label="Paste in Place", command=lambda: self.canvas_manager.paste_shape(in_place=True), accelerator="Ctrl+Shift+V")
         edit_menu.add_command(label="Delete", command=self.delete_selected, accelerator="Delete")
         edit_menu.add_separator()
         edit_menu.add_command(label="Add Label to Shape", command=self.add_label_to_selected, accelerator="Ctrl+L")
@@ -232,11 +233,19 @@ class DrawingApp:
         view_menu.add_separator()
         sheet_size_menu = tk.Menu(view_menu, tearoff=0)
         view_menu.add_cascade(label="Sheet Size", menu=sheet_size_menu)
+        # A check mark marks the preset matching the ACTIVE sheet's size
+        # (or "Custom" when no preset matches). Kept in sync by
+        # _sync_sheet_size_check() on every sheet switch / size change.
+        self.sheet_size_var = tk.StringVar(value="")
         for label, w, h in SHEET_SIZE_PRESETS:
-            sheet_size_menu.add_command(
-                label=label, command=partial(self.ui_set_sheet_size, w, h))
+            sheet_size_menu.add_radiobutton(
+                label=label, variable=self.sheet_size_var, value=label,
+                command=partial(self.ui_set_sheet_size, w, h))
         sheet_size_menu.add_separator()
-        sheet_size_menu.add_command(label="Custom...", command=self.ui_custom_sheet_size)
+        sheet_size_menu.add_radiobutton(
+            label="Custom...", variable=self.sheet_size_var, value="__custom__",
+            command=self.ui_custom_sheet_size)
+        self._sync_sheet_size_check()
 
     # ------------------------------------------------------------------
     # UI setup
@@ -388,6 +397,7 @@ class DrawingApp:
         self.root.bind("<Control-y>", lambda e: self.canvas_manager.redo())
         self.root.bind("<Control-c>", lambda e: self.canvas_manager.copy_shape())
         self.root.bind("<Control-v>", lambda e: self.canvas_manager.paste_shape())
+        self.root.bind("<Control-Shift-V>", lambda e: self.canvas_manager.paste_shape(in_place=True))
         self.root.bind("<Delete>", lambda e: self.delete_selected())
         self.root.bind("<Control-g>", lambda e: self.toggle_grid_shortcut())
         self.root.bind("<Control-h>", lambda e: self.toggle_snap_shortcut())
@@ -1178,9 +1188,16 @@ class DrawingApp:
     def _release_resize(self, x, y):
         if not self.resizing_shape:
             return
+        shape = self.canvas_manager.selected_shape
         self.resizing_shape = False
         self.resize_handle = None
         self.resize_center = None
+        if shape:
+            # Pin anchors moved with the resized bounds; wires bound to this
+            # shape's pins were left at their pre-resize position throughout
+            # the drag (only redraw_shape ran on every tick) — snap them onto
+            # the shape's new pin positions now.
+            self.canvas_manager.update_connected_lines(shape)
         self.canvas_manager.record_state()
         self.status_bar.config(text="Shape resized")
 
@@ -1907,9 +1924,26 @@ class DrawingApp:
                                      width=1, tags="page")
         self.canvas.tag_lower("page")
 
+    def _sync_sheet_size_check(self):
+        """Mark the Sheet Size menu radio matching the active sheet's
+        dimensions. First preset whose w/h match wins (some presets share
+        dimensions); "Custom" when nothing matches."""
+        if not hasattr(self, 'sheet_size_var'):
+            return
+        cm = self.canvas_manager
+        sheet = cm.sheets[cm.active_sheet]
+        w, h = sheet.get('width'), sheet.get('height')
+        match = "__custom__"
+        for label, pw, ph in SHEET_SIZE_PRESETS:
+            if pw == w and ph == h:
+                match = label
+                break
+        self.sheet_size_var.set(match)
+
     def ui_set_sheet_size(self, width, height):
         i = self.canvas_manager.active_sheet
         self.canvas_manager.set_sheet_size(i, width, height)
+        self._sync_sheet_size_check()
         self.status_bar.config(text=f"Sheet size set to {width} x {height}")
 
     def ui_custom_sheet_size(self):
@@ -1951,6 +1985,7 @@ class DrawingApp:
                    command=lambda: self.ui_move_sheet(1)).pack(side=tk.LEFT, padx=1)
         ttk.Button(self.sheet_bar, text="Title…", width=7,
                    command=self.ui_edit_package_title).pack(side=tk.RIGHT, padx=1)
+        self._sync_sheet_size_check()
 
     def ui_switch_sheet(self, i):
         self._reset_interaction_state()
