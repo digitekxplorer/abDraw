@@ -386,7 +386,9 @@ class FileManager:
                        col, self._anchor(tk_anch), align=align)
         # Block title label (drawn centered like the canvas label).
         if getattr(s, 'label', None) and s.shape_type not in ("text", "connector", "connector_on"):
-            cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
+            lx = (s.x1 + s.x2) / 2 + getattr(s, 'label_offset_x', 0)
+            ly = (s.y1 + s.y2) / 2 + getattr(s, 'label_offset_y', 0)
+            cx, cy = T(lx, ly)
             self._text(draw, cx, cy, s.label, self._font(11, bold=True),
                        col, self._anchor("center"))
 
