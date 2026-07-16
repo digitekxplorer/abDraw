@@ -38,6 +38,25 @@
 # 07/08/2026 - Rename connectors: double-click an on/off-page connector, or
 #              Edit > Rename Connector..., to change its name (same name =
 #              same node); pre-fills current name, undoable
+# 07/09/2026 - Sheet Size menu (View > Sheet Size) now shows a check mark on
+#              the preset matching the active sheet's size (or "Custom...");
+#              stays in sync across sheet switches and size changes
+# 07/09/2026 - Group copy/paste: Ctrl+C/Ctrl+V now work over the current
+#              selection (single shape OR marquee group), same sheet or
+#              across sheets. Wires between two shapes copied together
+#              rewire to the new copies; a wire pinned outside the copied
+#              set detaches to a floating endpoint. net_name/conn_name carry
+#              over unchanged (same net/node). Repeated Ctrl+V cascades the
+#              paste offset; Ctrl+Shift+V / Edit > Paste in Place pastes with
+#              no offset. One undo entry per paste
+# 07/16/2026 - Wire-snap fix: resizing a block now re-snaps its connected
+#              wires to the new pin positions on release (were left stale,
+#              landing off-grid)
+# 07/16/2026 - Junction fix: a wire ending exactly on ANOTHER wire's bend
+#              corner now gets a junction dot (was only detected mid-segment)
+# 07/16/2026 - Export fix: shape labels dragged off-center now export at
+#              their actual dragged position instead of snapping back to
+#              the shape's center
 #
 # ============================================================================
 # File structure for your project:
