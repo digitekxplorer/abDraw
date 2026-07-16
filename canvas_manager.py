@@ -72,6 +72,7 @@ Invariants (do not break):
 import tkinter as tk
 import math
 import datetime
+import copy as _copy
 from shapes import Shape, Connection, PORT_OUTWARD, port_lead_length
 
 # All shape types that behave as connectable line segments
@@ -112,6 +113,7 @@ class CanvasManager:
         self.selected_shape = None
         self.selected_shapes = []   # group (marquee) selection — Phase A
         self.clipboard = None
+        self.paste_count = 0   # cascades repeated Ctrl+V; reset on next copy
         self.undo_stack = []
         self.redo_stack = []
         self.max_undo = 50
@@ -1279,17 +1281,88 @@ class CanvasManager:
                                     outline="#2e8b57", dash=(4, 3), width=2,
                                     tags="group_highlight")
 
-    def copy_shape(self):
-        if self.selected_shape:
-            self.clipboard = self.selected_shape.copy()
-            self.app.status_bar.config(text="Shape copied")
+    # Fixed offset applied to a pasted group so it doesn't land exactly on
+    # top of the source (small, consistent — matches most drawing tools).
+    PASTE_OFFSET = 20
 
-    def paste_shape(self):
-        if self.clipboard:
-            new_shape = self.clipboard.copy()
-            new_shape.shape_id = 0
-            self.add_shape(new_shape)
-            self.app.status_bar.config(text="Shape pasted")
+    def copy_shape(self):
+        """Copy the current selection (single OR marquee group) to the
+        clipboard as plain dicts. Same-sheet AND cross-sheet paste both read
+        this — the clipboard is app-level, not per-sheet."""
+        shapes_to_copy = self.selected_shapes if self.selected_shapes else (
+            [self.selected_shape] if self.selected_shape else [])
+        if not shapes_to_copy:
+            return
+        self.clipboard = [s.to_dict() for s in shapes_to_copy]
+        self.paste_count = 0
+        n = len(shapes_to_copy)
+        self.app.status_bar.config(
+            text="Copied 1 shape" if n == 1 else f"Copied {n} shapes")
+
+    def paste_shape(self, in_place=False):
+        """Paste the clipboard onto the ACTIVE sheet (may differ from the
+        sheet it was copied from), as one undo step.
+
+        Repeated Ctrl+V cascades the offset (PASTE_OFFSET, 2x, 3x, ...) like
+        most drawing tools, so successive pastes step diagonally instead of
+        stacking exactly on each other. in_place=True (Paste in Place) skips
+        the offset entirely and drops the copy exactly on the source
+        position; it does NOT advance the cascade.
+
+        Wire connections between two shapes that were copied TOGETHER are
+        rewired to the new copies. A wire pinned to a block that was NOT
+        copied (its target isn't in the clipboard set) is detached — it
+        becomes a floating endpoint at the same relative position, since
+        that target block may not even exist on the destination sheet.
+
+        net_name / conn_name are kept as-is on copies, so a pasted wire or
+        connector still joins the same net/node unless renamed afterward.
+        """
+        if not self.clipboard:
+            return
+        self.record_state()
+        if in_place:
+            off = 0
+        else:
+            self.paste_count += 1
+            off = self.PASTE_OFFSET * self.paste_count
+        id_map = {}
+        new_dicts = []
+        for src in self.clipboard:
+            data = _copy.deepcopy(src)
+            old_id = data.get('shape_id', 0)
+            new_id = self.next_shape_id
+            self.next_shape_id += 1
+            id_map[old_id] = new_id
+            data['shape_id'] = new_id
+            data['canvas_id'] = None
+            data['label_canvas_id'] = None
+            data['x1'] = data.get('x1', 0) + off
+            data['y1'] = data.get('y1', 0) + off
+            data['x2'] = data.get('x2', 0) + off
+            data['y2'] = data.get('y2', 0) + off
+            data['waypoints'] = [[wp[0] + off, wp[1] + off]
+                                  for wp in data.get('waypoints', [])]
+            new_dicts.append(data)
+        for data in new_dicts:
+            kept = []
+            for c in data.get('connections', []):
+                tid = c.get('target_id')
+                if tid in id_map:
+                    nc = dict(c)
+                    nc['target_id'] = id_map[tid]
+                    kept.append(nc)
+                # else: target wasn't part of the copied set — detach.
+            data['connections'] = kept
+        new_shapes = [Shape.from_dict(d) for d in new_dicts]
+        for shape in new_shapes:
+            self.draw_shape(shape)
+            self.shapes.append(shape)
+        self.redraw_junctions()
+        self.set_group_selection(new_shapes)
+        n = len(new_shapes)
+        self.app.status_bar.config(
+            text="Pasted 1 shape" if n == 1 else f"Pasted {n} shapes")
 
     def bring_to_front(self):
         if self.selected_shape:
@@ -1333,6 +1406,16 @@ class CanvasManager:
         snap_x, snap_y, _ = self.get_snap_point(x, y, line_shape)
         return snap_x, snap_y
 
+    def _grid_snap_1d(self, v):
+        """Round one coordinate to the active drawing grid, matching how
+        block bounds already snap on move/resize (so a computed midpoint
+        lands on the same dots as everything else). No-op if snapping is
+        off or the grid spacing is unavailable/zero."""
+        spacing = getattr(self.app, 'grid_spacing', 0) if getattr(self.app, 'snap_to_grid', False) else 0
+        if not spacing:
+            return v
+        return round(v / spacing) * spacing
+
     def get_snap_point(self, x, y, exclude_shape=None, max_dist=None):
         min_dist = max_dist if max_dist is not None else self.snap_distance
         snap_x, snap_y = x, y
@@ -1350,19 +1433,25 @@ class CanvasManager:
                 ax, ay = shape.port_anchor(p['name'])
                 candidates.append((ax, ay, p['name']))
 
+            # Edge MIDPOINTS aren't guaranteed to fall on a grid line (a
+            # box's width/height need not be an even multiple of the grid),
+            # so a wire snapping to one can land strictly between dots.
+            # Corners are already grid-aligned (shapes snap on move/resize),
+            # so only midpoint-derived coordinates need re-snapping here.
+            gx = self._grid_snap_1d
+
             if shape.shape_type in ["rectangle", "square", "register", "adder"]:
+                mx, my = gx((shape.x1 + shape.x2) / 2), gx((shape.y1 + shape.y2) / 2)
                 pts = [
                     (shape.x1, shape.y1), (shape.x2, shape.y1),
                     (shape.x1, shape.y2), (shape.x2, shape.y2),
-                    ((shape.x1 + shape.x2) / 2, shape.y1),
-                    ((shape.x1 + shape.x2) / 2, shape.y2),
-                    (shape.x1, (shape.y1 + shape.y2) / 2),
-                    (shape.x2, (shape.y1 + shape.y2) / 2),
+                    (mx, shape.y1), (mx, shape.y2),
+                    (shape.x1, my), (shape.x2, my),
                 ]
                 candidates.extend((px, py, None) for px, py in pts)
             elif shape.shape_type in ["circle", "ellipse"]:
-                cx = (shape.x1 + shape.x2) / 2
-                cy = (shape.y1 + shape.y2) / 2
+                cx = gx((shape.x1 + shape.x2) / 2)
+                cy = gx((shape.y1 + shape.y2) / 2)
                 rx = abs(shape.x2 - shape.x1) / 2
                 ry = abs(shape.y2 - shape.y1) / 2
                 candidates.extend([
@@ -1370,7 +1459,7 @@ class CanvasManager:
                     (cx, cy - ry, None), (cx, cy + ry, None),
                 ])
             elif shape.shape_type == "triangle":
-                cx = (shape.x1 + shape.x2) / 2
+                cx = gx((shape.x1 + shape.x2) / 2)
                 candidates.extend([
                     (cx, shape.y1, None),
                     (shape.x1, shape.y2, None),
@@ -1477,8 +1566,14 @@ class CanvasManager:
                 if s2.shape_id == sid:
                     continue
                 poly2 = polys[s2.shape_id]
-                if any(self._seg_has_interior_point(pt, poly2[i], poly2[i + 1])
-                       for i in range(len(poly2) - 1)):
+                # A T-tap either lands mid-segment (interior point) OR exactly
+                # on one of s2's own BEND vertices (a corner) — the latter is
+                # excluded from _seg_has_interior_point on purpose (so a
+                # wire's own bends never self-flag), but here s2 is a
+                # DIFFERENT wire, so landing on its corner is a real junction.
+                on_bend = any(key(poly2[j]) == key(pt) for j in range(1, len(poly2) - 1))
+                if on_bend or any(self._seg_has_interior_point(pt, poly2[i], poly2[i + 1])
+                                   for i in range(len(poly2) - 1)):
                     dots[key(pt)] = pt
                     break
         return list(dots.values())
