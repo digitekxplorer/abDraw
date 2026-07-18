@@ -39,10 +39,18 @@ No external EDA tooling required — abDraw runs anywhere Python and Tkinter run
 ### Drawing & annotation
 - **Shape tools** — Select, Line, Arrow, Rectangle, Square, Circle, Ellipse,
   Triangle, with adjustable thickness, stroke color, and grid snapping.
-- **Group selection** — marquee-drag to select multiple shapes, move them together
-  (pinned wires stay coherent), and delete them as a single undoable action.
+- **Group selection** — marquee-drag to select multiple shapes (tested against each
+  wire's actual routed path, not just its bounding box), move them together
+  (in-group wires keep their relative layout; wires to outside blocks re-pin), and
+  delete them as a single undoable action.
+- **Group copy/paste** — copy the current selection (single shape or group), paste
+  on the same sheet or another; wires between copied shapes rewire to the new
+  copies, net/connector names carry over. Repeated paste cascades the offset;
+  Paste in Place drops it exactly on the source.
 - **Fill** — No Fill or a chosen fill color per shape. Interior text (pin names,
   adder glyph, connector names) **auto-contrasts** the fill so labels stay readable.
+- **Arrange** — Bring to Front / Send to Back restack a shape (and its label, or
+  a connector's name + inner ring, as one unit); order persists in save/load.
 - **Note Arrow / Note Line** — non-electrical annotation arrow and line for pointing
   at or underlining a block from a caption; excluded from the netlist, DRC, and
   junction detection. Note Lines support named dash patterns (Solid, Dashed, Fine,
