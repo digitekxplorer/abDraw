@@ -57,6 +57,25 @@
 # 07/16/2026 - Export fix: shape labels dragged off-center now export at
 #              their actual dragged position instead of snapping back to
 #              the shape's center
+# 07/17/2026 - Marquee fix: group-select rect now tests a wire's actual
+#              routed polyline, not just its bounding box, so a long net
+#              spanning the sheet no longer false-positives into an
+#              unrelated group selection
+# 07/17/2026 - Group move fix: wires that are members of a moved group are
+#              no longer wiped and re-auto-routed (were losing their
+#              relative layout); only wires outside the group re-pin
+# 07/17/2026 - Wire-connect fix: tightened the auto-connect snap tolerance
+#              (was grid_spacing-based, ~26px) to a fixed 8px, so a wire
+#              deliberately started a full grid space from a block's corner
+#              no longer gets pulled onto that corner
+# 07/17/2026 - Arrange menu fixes: Send to Back no longer drops a shape
+#              below the opaque page background (was disappearing); Bring
+#              to Front/Send to Back now also restack a shape's label and,
+#              for connectors, their name text + inner ring as one unit;
+#              z-order now also persists in save/load (was canvas-only)
+# 07/18/2026 - Export fix: rectangle/circle/connector shapes with a corner
+#              dragged past the opposite corner no longer crash PDF/PNG
+#              export (PIL requires normalized bounds; Tk's canvas doesn't)
 #
 # ============================================================================
 # File structure for your project:
