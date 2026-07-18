@@ -1343,8 +1343,13 @@ class DrawingApp:
         for endpoint in ("start", "end"):
             ex = line_shape.x1 if endpoint == "start" else line_shape.x2
             ey = line_shape.y1 if endpoint == "start" else line_shape.y2
+            # Tight tolerance on purpose: this only binds a click that's
+            # actually on (or a couple px from) the shape's edge/corner/pin.
+            # A wider tolerance (e.g. grid_spacing-based) would swallow a
+            # point the user deliberately placed a full grid space away and
+            # drag it onto the nearest corner/edge instead.
             snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
-                ex, ey, line_shape, max_dist=self.grid_spacing + 6)
+                ex, ey, line_shape, max_dist=8)
             if not snap_shape:
                 continue
             port_name = self.canvas_manager.last_snap_port
@@ -1648,8 +1653,16 @@ class DrawingApp:
             if b is None:
                 continue
             bx1, by1, bx2, by2 = b
-            if bx1 <= rx2 and bx2 >= rx1 and by1 <= ry2 and by2 >= ry1:
-                picked.append(shape)
+            if not (bx1 <= rx2 and bx2 >= rx1 and by1 <= ry2 and by2 >= ry1):
+                continue
+            # A wire's bbox can span the whole sheet (e.g. a long orthogonal
+            # run) while its actual polyline never crosses the marquee box —
+            # bbox overlap alone would false-positive it in. Test the real
+            # segments for line-like shapes; other shapes keep the bbox test.
+            if shape.shape_type in LINE_TYPES or shape.shape_type in ("bus", "ortho_bus"):
+                if not self._polyline_intersects_rect(shape, rx1, ry1, rx2, ry2):
+                    continue
+            picked.append(shape)
 
         self.canvas_manager.set_group_selection(picked)
         n = len(picked)
@@ -1658,6 +1671,47 @@ class DrawingApp:
                 text=f"Selected {n} object{'s' if n != 1 else ''} (group)")
         else:
             self.status_bar.config(text="No shapes in region")
+
+    @staticmethod
+    def _seg_intersects_rect(x1, y1, x2, y2, rx1, ry1, rx2, ry2):
+        """True if segment (x1,y1)-(x2,y2) intersects axis-aligned rect."""
+        # Either endpoint inside the rect.
+        if (rx1 <= x1 <= rx2 and ry1 <= y1 <= ry2) or (rx1 <= x2 <= rx2 and ry1 <= y2 <= ry2):
+            return True
+        # Liang-Barsky segment-vs-rect clip test.
+        dx, dy = x2 - x1, y2 - y1
+        p = [-dx, dx, -dy, dy]
+        q = [x1 - rx1, rx2 - x1, y1 - ry1, ry2 - y1]
+        t0, t1 = 0.0, 1.0
+        for pi, qi in zip(p, q):
+            if pi == 0:
+                if qi < 0:
+                    return False
+            else:
+                tt = qi / pi
+                if pi < 0:
+                    if tt > t1:
+                        return False
+                    if tt > t0:
+                        t0 = tt
+                else:
+                    if tt < t0:
+                        return False
+                    if tt < t1:
+                        t1 = tt
+        return t0 <= t1
+
+    def _polyline_intersects_rect(self, shape, rx1, ry1, rx2, ry2):
+        """True if any segment of a wire's actual routed path (waypoints in
+        order, or straight x1,y1-x2,y2 if none) crosses the marquee rect."""
+        pts = [(shape.x1, shape.y1)]
+        pts.extend((wp[0], wp[1]) for wp in (getattr(shape, 'waypoints', None) or []))
+        pts.append((shape.x2, shape.y2))
+        for i in range(len(pts) - 1):
+            (ax, ay), (bx, by) = pts[i], pts[i + 1]
+            if self._seg_intersects_rect(ax, ay, bx, by, rx1, ry1, rx2, ry2):
+                return True
+        return False
 
     def _shape_bounds(self, shape):
         """Axis-aligned bounds (x1, y1, x2, y2) of a shape in canvas coords,
@@ -1712,11 +1766,15 @@ class DrawingApp:
                 for wp in (s.waypoints or []):
                     wp[0] += dx;  wp[1] += dy
 
-        # Re-pin wires attached to any moved block (fixes both in-group wires
-        # and external wires that must follow a moved block).
+        # Re-pin EXTERNAL wires attached to any moved block (a wire outside
+        # the group that's pinned to a block we just moved must follow it).
+        # In-group wires are excluded via skip_ids: they were already
+        # translated as a rigid unit above, so they must NOT be wiped and
+        # rerouted from scratch here (that discarded the group's relative
+        # layout and let the auto-router restagger from nothing).
         for s in sel:
             if s.shape_type not in LINE_TYPES:
-                cm.update_connected_lines(s)
+                cm.update_connected_lines(s, skip_ids=sel_ids)
 
         # Repaint the group and its highlight from the new geometry.
         for s in sel:
