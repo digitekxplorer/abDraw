@@ -340,8 +340,11 @@ class FileManager:
         col = s.color
         fill = s.fill_color or None
         w = max(1, int(s.width))
+        # Normalize: a shape dragged past its opposite corner has x1>x2 or
+        # y1>y2 -- Tk's canvas tolerates either order, PIL's ImageDraw does not.
+        bx1, by1, bx2, by2 = s.get_bounds()
         if s.shape_type in ("rectangle", "square", "register", "adder"):
-            draw.rectangle([T(s.x1, s.y1), T(s.x2, s.y2)], outline=col, fill=fill, width=w)
+            draw.rectangle([T(bx1, by1), T(bx2, by2)], outline=col, fill=fill, width=w)
         elif s.shape_type == "mux":
             inset = min(20, abs(s.y2 - s.y1) * 0.18)
             pts = [T(s.x1, s.y1), T(s.x1, s.y2),
@@ -350,7 +353,7 @@ class FileManager:
             if w > 1:
                 draw.line(pts + [pts[0]], fill=col, width=w, joint="curve")
         elif s.shape_type in ("circle", "ellipse"):
-            draw.ellipse([T(s.x1, s.y1), T(s.x2, s.y2)], outline=col, fill=fill, width=w)
+            draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col, fill=fill, width=w)
         elif s.shape_type == "triangle":
             cx = (s.x1 + s.x2) / 2
             pts = [T(cx, s.y1), T(s.x1, s.y2), T(s.x2, s.y2)]
@@ -358,7 +361,7 @@ class FileManager:
             if w > 1:
                 draw.line(pts + [pts[0]], fill=col, width=w, joint="curve")
         elif s.shape_type == "connector":
-            draw.ellipse([T(s.x1, s.y1), T(s.x2, s.y2)], outline=col,
+            draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col,
                          fill=(s.fill_color or "white"), width=max(2, w))
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
@@ -366,11 +369,12 @@ class FileManager:
                        self.app.canvas_manager.label_color_for(s),
                        self._anchor("center"))
         elif s.shape_type == "connector_on":
-            draw.ellipse([T(s.x1, s.y1), T(s.x2, s.y2)], outline=col,
+            draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col,
                          fill=(s.fill_color or "white"), width=max(2, w))
-            ins = 4
-            draw.ellipse([T(s.x1 + ins, s.y1 + ins), T(s.x2 - ins, s.y2 - ins)],
-                         outline=col, width=max(1, w - 1))
+            ins = min(4, (bx2 - bx1) / 2 - 0.5, (by2 - by1) / 2 - 0.5)
+            if ins > 0:
+                draw.ellipse([T(bx1 + ins, by1 + ins), T(bx2 - ins, by2 - ins)],
+                             outline=col, width=max(1, w - 1))
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
                        self._font(11, bold=True),
