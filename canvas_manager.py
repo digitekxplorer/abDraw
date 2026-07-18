@@ -1367,11 +1367,35 @@ class CanvasManager:
     def bring_to_front(self):
         if self.selected_shape:
             self.app.canvas.tag_raise(self.selected_shape.canvas_id)
+            if getattr(self.selected_shape, 'label_canvas_id', None):
+                self.app.canvas.tag_raise(self.selected_shape.label_canvas_id)
+            # A connector's name text (and, for on-page, its inner ring) are
+            # drawn as separate canvas items tagged with ports_tag(shape),
+            # not stored on the shape itself — raise/lower that whole group
+            # too so the WHOLE symbol (not just the outer circle) restacks.
+            self.app.canvas.tag_raise(self.ports_tag(self.selected_shape))
+            # Canvas stacking alone doesn't survive save/load or sheet switch
+            # (those redraw shapes in self.shapes list order) — keep the list
+            # order consistent with the visual stacking so it persists.
+            if self.selected_shape in self.shapes:
+                self.shapes.remove(self.selected_shape)
+                self.shapes.append(self.selected_shape)
             self.app.status_bar.config(text="Brought to front")
 
     def send_to_back(self):
         if self.selected_shape:
-            self.app.canvas.tag_lower(self.selected_shape.canvas_id)
+            # Lower only to just above the "grid"/"page" background tags, not
+            # to the absolute bottom of the canvas stack — an unqualified
+            # tag_lower() drops the shape BELOW the opaque white page
+            # rectangle, making it disappear instead of merely going behind
+            # other shapes.
+            self.app.canvas.tag_lower(self.selected_shape.canvas_id, "grid")
+            if getattr(self.selected_shape, 'label_canvas_id', None):
+                self.app.canvas.tag_lower(self.selected_shape.label_canvas_id, "grid")
+            self.app.canvas.tag_lower(self.ports_tag(self.selected_shape), "grid")
+            if self.selected_shape in self.shapes:
+                self.shapes.remove(self.selected_shape)
+                self.shapes.insert(0, self.selected_shape)
             self.app.status_bar.config(text="Sent to back")
 
     # ------------------------------------------------------------------
@@ -1621,8 +1645,20 @@ class CanvasManager:
         canvas.tag_lower("net_highlight")
         return len(matches)
 
-    def update_connected_lines(self, moved_shape):
+    def update_connected_lines(self, moved_shape, skip_ids=None):
+        """Re-pin wires connected to moved_shape's ports (and, for the
+        auto-router, reroute them from scratch).
+
+        skip_ids: wire shape_ids to leave untouched entirely — used for a
+        group move, where those wires are themselves group members already
+        translated as a rigid unit in _translate_group. Rerouting them here
+        would discard that correct, already-consistent geometry and let the
+        auto-router restagger multiple wires on the same pin side from
+        scratch, which can come out differently than the original layout."""
+        skip_ids = skip_ids or set()
         for shape in self.shapes:
+            if shape.shape_id in skip_ids:
+                continue
             if shape.shape_type not in LINE_TYPES:
                 continue
             touched = False
