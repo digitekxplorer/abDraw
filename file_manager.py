@@ -224,7 +224,14 @@ class FileManager:
                 "center": "mm", "nw": "la", "ne": "ra",
                 "sw": "ld", "se": "rd"}.get(tk_anchor, "la")
 
-    def _text(self, draw, x, y, s, font, fill, anchor="la", align="left"):
+    def _text(self, draw, x, y, s, font, fill, anchor="la", align="left",
+              allow_light=False):
+        # All exported text defaults to black so faint on-screen colors (e.g.
+        # the light-blue net labels) stay legible in print. Interior labels
+        # that must contrast a dark shape fill pass allow_light=True to keep
+        # their auto-contrast color.
+        if not allow_light:
+            fill = "black"
         try:
             draw.text((x, y), str(s), font=font, fill=fill, anchor=anchor, align=align)
         except Exception:
@@ -367,7 +374,7 @@ class FileManager:
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
                        self._font(12, bold=True),
                        self.app.canvas_manager.label_color_for(s),
-                       self._anchor("center"))
+                       self._anchor("center"), allow_light=True)
         elif s.shape_type == "connector_on":
             draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col,
                          fill=(s.fill_color or "white"), width=max(2, w))
@@ -379,7 +386,7 @@ class FileManager:
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
                        self._font(11, bold=True),
                        self.app.canvas_manager.label_color_for(s),
-                       self._anchor("center"))
+                       self._anchor("center"), allow_light=True)
         elif s.shape_type == "text":
             tx, ty = T(s.x1, s.y1)
             size = getattr(s, 'font_size', 12) or 12
@@ -419,7 +426,7 @@ class FileManager:
                     lx, ly, anch = px, py - off, "s"
                 tx, ty = T(lx, ly)
                 self._text(draw, tx, ty, p['name'], self._font(9),
-                           lbl_col, self._anchor(anch))
+                           lbl_col, self._anchor(anch), allow_light=True)
             if p['name'].lower() == 'clk':
                 tri = 7
                 if side == 'L':
@@ -435,7 +442,7 @@ class FileManager:
         if s.shape_type == "adder":
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, "+", self._font(18, bold=True),
-                       lbl_col, self._anchor("center"))
+                       lbl_col, self._anchor("center"), allow_light=True)
 
     @staticmethod
     def _dashed_poly(draw, pts, fill, width, pattern):
