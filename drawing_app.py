@@ -61,6 +61,129 @@ class ToolTip:
             self.tooltip = None
 
 
+class ZoomCanvas(tk.Canvas):
+    """A tk.Canvas that renders at a view zoom while the rest of abDraw keeps
+    speaking WORLD coordinates. Every coordinate-carrying Canvas method is
+    overridden to convert world<->screen using self.zoom as the ONLY factor,
+    so drawing, hit-testing, dragging, snapping, the router, netlist, export
+    and the save format are all unchanged. Strictly view-only: no stored
+    shape data is ever scaled.
+
+      * drawing (create_*) : world coords -> screen; font/width/arrow/dash
+                             also scaled so a zoomed view looks truly zoomed.
+      * input  (canvasx/y) : screen -> world, so handlers receive world coords.
+      * read-back (bbox,   : screen -> world, so code that reads an item and
+        coords-getter)       redraws it never double-scales.
+      * mutate (move,      : world args -> screen.
+        coords-setter,
+        find_overlapping)
+    """
+
+    def __init__(self, master, **kw):
+        super().__init__(master, **kw)
+        self.zoom = 1.0
+
+    def _w2s(self, v):
+        return v * self.zoom
+
+    def _s2w(self, v):
+        return v / self.zoom if self.zoom else v
+
+    def _scale_coords(self, args):
+        # Accept both create_line(x0, y0, x1, y1, ...) and create_line([...]).
+        if len(args) == 1 and isinstance(args[0], (list, tuple)):
+            seq = args[0]
+            return (type(seq)(self._w2s(c) for c in seq),)
+        return tuple(self._w2s(a) if isinstance(a, (int, float)) else a
+                     for a in args)
+
+    def _scale_font(self, font):
+        if isinstance(font, (tuple, list)) and len(font) >= 2 \
+                and isinstance(font[1], (int, float)):
+            size = font[1]
+            new = max(1, int(round(abs(size) * self.zoom)))
+            new = -new if size < 0 else new
+            return (font[0], new) + tuple(font[2:])
+        return font
+
+    def _scale_kw(self, kw):
+        z = self.zoom
+        w = kw.get("width")
+        if isinstance(w, (int, float)):
+            kw["width"] = w * z
+        ar = kw.get("arrowshape")
+        if ar:
+            try:
+                kw["arrowshape"] = tuple(a * z for a in ar)
+            except TypeError:
+                pass
+        dash = kw.get("dash")
+        if dash:
+            try:
+                kw["dash"] = tuple(max(1, int(round(d * z))) for d in dash)
+            except TypeError:
+                pass
+        return kw
+
+    # --- drawing: world -> screen ---
+    def create_line(self, *args, **kw):
+        return super().create_line(*self._scale_coords(args), **self._scale_kw(kw))
+
+    def create_rectangle(self, *args, **kw):
+        return super().create_rectangle(*self._scale_coords(args), **self._scale_kw(kw))
+
+    def create_oval(self, *args, **kw):
+        return super().create_oval(*self._scale_coords(args), **self._scale_kw(kw))
+
+    def create_polygon(self, *args, **kw):
+        return super().create_polygon(*self._scale_coords(args), **self._scale_kw(kw))
+
+    def create_arc(self, *args, **kw):
+        return super().create_arc(*self._scale_coords(args), **self._scale_kw(kw))
+
+    def create_text(self, x, y, **kw):
+        if "font" in kw:
+            kw = dict(kw)
+            kw["font"] = self._scale_font(kw["font"])
+        return super().create_text(self._w2s(x), self._w2s(y), **kw)
+
+    # --- mutate existing items ---
+    def coords(self, item, *args):
+        if not args:
+            return [self._s2w(v) for v in super().coords(item)]
+        return super().coords(item, *self._scale_coords(args))
+
+    def move(self, item, dx, dy):
+        return super().move(item, self._w2s(dx), self._w2s(dy))
+
+    # --- read-back: return WORLD coords ---
+    def bbox(self, *args):
+        b = super().bbox(*args)
+        if not b:
+            return b
+        return tuple(self._s2w(v) for v in b)
+
+    # --- hit-testing: accept WORLD coords ---
+    def find_overlapping(self, x1, y1, x2, y2):
+        return super().find_overlapping(self._w2s(x1), self._w2s(y1),
+                                        self._w2s(x2), self._w2s(y2))
+
+    def find_enclosed(self, x1, y1, x2, y2):
+        return super().find_enclosed(self._w2s(x1), self._w2s(y1),
+                                     self._w2s(x2), self._w2s(y2))
+
+    # --- input: return WORLD coords ---
+    def canvasx(self, screenx, gridspacing=None):
+        v = super().canvasx(screenx) if gridspacing is None \
+            else super().canvasx(screenx, gridspacing)
+        return self._s2w(v)
+
+    def canvasy(self, screeny, gridspacing=None):
+        v = super().canvasy(screeny) if gridspacing is None \
+            else super().canvasy(screeny, gridspacing)
+        return self._s2w(v)
+
+
 class DrawingApp:
     """Main drawing application"""
 
@@ -213,6 +336,12 @@ class DrawingApp:
         view_menu.add_checkbutton(label="Snap to Grid", variable=self.snap_enabled_var,
                                   command=self.toggle_snap, accelerator="Ctrl+H")
         view_menu.add_separator()
+        view_menu.add_command(label="Zoom In", command=self.zoom_in, accelerator="Ctrl+=")
+        view_menu.add_command(label="Zoom Out", command=self.zoom_out, accelerator="Ctrl+-")
+        view_menu.add_command(label="Zoom to Fit", command=self.zoom_fit)
+        view_menu.add_command(label="Actual Size (100%)", command=self.zoom_reset,
+                              accelerator="Ctrl+0")
+        view_menu.add_separator()
 
         grid_type_menu = tk.Menu(view_menu, tearoff=0)
         view_menu.add_cascade(label="Grid Type", menu=grid_type_menu)
@@ -273,7 +402,7 @@ class DrawingApp:
 
         vbar = ttk.Scrollbar(canvas_container, orient=tk.VERTICAL)
         hbar = ttk.Scrollbar(canvas_container, orient=tk.HORIZONTAL)
-        self.canvas = tk.Canvas(canvas_container, bg="#B8B8B8", cursor="crosshair",
+        self.canvas = ZoomCanvas(canvas_container, bg="#B8B8B8", cursor="crosshair",
                                 xscrollcommand=hbar.set, yscrollcommand=vbar.set)
         vbar.config(command=self.canvas.yview)
         hbar.config(command=self.canvas.xview)
@@ -412,6 +541,13 @@ class DrawingApp:
         self.root.bind("<Return>", lambda e: self._finish_ortho_if_active())
         self.root.bind("<r>", lambda e: self._flip_ortho_routing())
         self.root.bind("<R>", lambda e: self._flip_ortho_routing())
+        self.root.bind("<Control-equal>", lambda e: self.zoom_in())
+        self.root.bind("<Control-plus>", lambda e: self.zoom_in())
+        self.root.bind("<Control-minus>", lambda e: self.zoom_out())
+        self.root.bind("<Control-0>", lambda e: self.zoom_reset())
+        self.canvas.bind("<MouseWheel>", self._on_ctrl_wheel)
+        self.canvas.bind("<Button-4>", lambda e: self.zoom_at_cursor(e, 1.1))
+        self.canvas.bind("<Button-5>", lambda e: self.zoom_at_cursor(e, 1 / 1.1))
 
     # ------------------------------------------------------------------
     # Tool selection
@@ -1969,7 +2105,131 @@ class DrawingApp:
         w = sheet.get('width', 1700)
         h = sheet.get('height', 1100)
         margin = 60   # let the page breathe a bit past its own edges
-        self.canvas.config(scrollregion=(-margin, -margin, w + margin, h + margin))
+        z = getattr(self.canvas, 'zoom', 1.0)
+        self.canvas.config(scrollregion=(-margin, -margin,
+                                         w * z + margin, h * z + margin))
+
+    # ------------------------------------------------------------------
+    # Zoom (view-only; all shape data stays in world coordinates)
+    # ------------------------------------------------------------------
+
+    MIN_ZOOM = 0.2
+    MAX_ZOOM = 5.0
+
+    def zoom_repaint(self):
+        """Repaint the live sheet at the current zoom. Pure view refresh:
+        does not touch shape data, connections, or routing."""
+        cm = self.canvas_manager
+        cm._clear_canvas_items()
+        self.update_scrollregion()
+        self.draw_page_boundary()
+        self.draw_grid()
+        for s in cm.shapes:
+            cm.draw_shape(s)
+        cm.redraw_junctions()
+        cm.draw_title_block()
+        self._reapply_selection_highlight()
+
+    def _reapply_selection_highlight(self):
+        """Redraw the current selection's dashed box + handles after a
+        repaint, without a hit-test, so it survives a zoom at any position."""
+        cm = self.canvas_manager
+        shape = cm.selected_shape
+        if shape and shape in cm.shapes:
+            cm.highlight_net_group(shape)
+            item = shape.canvas_id
+            if shape.shape_type == "text":
+                b = self.canvas.bbox(item)
+                if b:
+                    self.canvas.create_rectangle(
+                        b[0] - 5, b[1] - 5, b[2] + 5, b[3] + 5,
+                        outline="blue", dash=(5, 5), width=2, tags="highlight")
+            else:
+                coords = self.canvas.coords(item)
+                if len(coords) >= 4:
+                    self.canvas.create_rectangle(
+                        min(coords[0::2]) - 5, min(coords[1::2]) - 5,
+                        max(coords[0::2]) + 5, max(coords[1::2]) + 5,
+                        outline="blue", dash=(5, 5), width=2, tags="highlight")
+            if shape.shape_type in ("ortho_line", "ortho_arrow"):
+                self.draw_ortho_handles(shape)
+            elif shape.shape_type in ("line", "arrow"):
+                self.draw_endpoint_handles(shape)
+            elif shape.shape_type in ["rectangle", "square", "circle", "ellipse",
+                                      "triangle", "mux", "register", "adder"]:
+                self.draw_resize_handles(shape)
+        elif cm.selected_shapes:
+            cm.draw_group_highlight()
+
+    def _scrollregion(self):
+        try:
+            return [float(v) for v in self.canvas.cget("scrollregion").split()]
+        except (ValueError, AttributeError):
+            return None
+
+    def set_zoom(self, z, focus=None):
+        """Set the view zoom (clamped) and repaint. focus=(wx, wy, vx, vy)
+        keeps world point (wx, wy) under viewport pixel (vx, vy) — used for
+        zoom-to-cursor and zoom-about-center."""
+        z = max(self.MIN_ZOOM, min(self.MAX_ZOOM, z))
+        if abs(z - self.canvas.zoom) < 1e-9:
+            return
+        self.canvas.zoom = z
+        self.zoom_repaint()
+        if focus:
+            wx, wy, vx, vy = focus
+            sr = self._scrollregion()
+            if sr:
+                x1, y1, x2, y2 = sr
+                sw, sh = (x2 - x1), (y2 - y1)
+                if sw > 0:
+                    self.canvas.xview_moveto((wx * z - vx - x1) / sw)
+                if sh > 0:
+                    self.canvas.yview_moveto((wy * z - vy - y1) / sh)
+        self.status_bar.config(text=f"Zoom: {int(round(z * 100))}%")
+
+    def zoom_at_cursor(self, event, factor):
+        wx = self.canvas.canvasx(event.x)
+        wy = self.canvas.canvasy(event.y)
+        self.set_zoom(self.canvas.zoom * factor,
+                      focus=(wx, wy, event.x, event.y))
+
+    def _zoom_center(self, factor):
+        vx = self.canvas.winfo_width() / 2
+        vy = self.canvas.winfo_height() / 2
+        wx = self.canvas.canvasx(vx)
+        wy = self.canvas.canvasy(vy)
+        self.set_zoom(self.canvas.zoom * factor, focus=(wx, wy, vx, vy))
+
+    def zoom_in(self):
+        self._zoom_center(1.25)
+
+    def zoom_out(self):
+        self._zoom_center(1 / 1.25)
+
+    def zoom_reset(self):
+        self._zoom_center(1.0 / self.canvas.zoom if self.canvas.zoom else 1.0)
+
+    def zoom_fit(self):
+        sheet = self.canvas_manager.sheets[self.canvas_manager.active_sheet]
+        w = sheet.get('width', 1700)
+        h = sheet.get('height', 1100)
+        vw = self.canvas.winfo_width()
+        vh = self.canvas.winfo_height()
+        if vw < 5 or vh < 5 or w <= 0 or h <= 0:
+            return
+        pad = 40
+        z = max(self.MIN_ZOOM, min(self.MAX_ZOOM,
+                                   min((vw - pad) / w, (vh - pad) / h)))
+        self.canvas.zoom = z
+        self.zoom_repaint()
+        self.canvas.xview_moveto(0.0)
+        self.canvas.yview_moveto(0.0)
+        self.status_bar.config(text=f"Zoom: {int(round(z * 100))}% (fit)")
+
+    def _on_ctrl_wheel(self, event):
+        self.zoom_at_cursor(event, 1.1 if event.delta > 0 else 1 / 1.1)
+        return "break"
 
     def draw_page_boundary(self):
         """Draw the page rectangle (white) on a gray 'pasteboard' background."""
