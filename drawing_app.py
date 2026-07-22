@@ -106,7 +106,28 @@ class ZoomCanvas(tk.Canvas):
             return (font[0], new) + tuple(font[2:])
         return font
 
+    # Screen-space UI chrome (selection/marquee/handles/previews): its
+    # POSITION scales with zoom so it tracks world features, but its stroke
+    # width and dash pattern must NOT scale — otherwise, zoomed out, a 1px
+    # dashed marquee collapses to an invisible hairline (and zoomed in it
+    # turns into fat chunks). Only true schematic content scales its stroke.
+    OVERLAY_TAGS = frozenset((
+        "marquee", "group_highlight", "highlight", "resize_handle",
+        "endpoint_handle", "snap_indicator", "label_highlight",
+        "net_highlight", "ortho_preview",
+    ))
+
+    def _is_overlay(self, kw):
+        tags = kw.get("tags")
+        if not tags:
+            return False
+        if isinstance(tags, str):
+            tags = (tags,)
+        return any(t in self.OVERLAY_TAGS for t in tags)
+
     def _scale_kw(self, kw):
+        if self._is_overlay(kw):
+            return kw          # chrome keeps a constant screen stroke
         z = self.zoom
         w = kw.get("width")
         if isinstance(w, (int, float)):
