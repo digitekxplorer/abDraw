@@ -76,6 +76,12 @@
 # 07/18/2026 - Export fix: rectangle/circle/connector shapes with a corner
 #              dragged past the opposite corner no longer crash PDF/PNG
 #              export (PIL requires normalized bounds; Tk's canvas doesn't)
+# 07/22/2026 - Zoom (view-only): ZoomCanvas subclass renders the sheet at a
+#              0.2x-5x view scale while the whole app keeps working in world
+#              coordinates (router, snap, netlist, export, and save format
+#              unchanged). Mouse wheel = zoom-to-cursor; Ctrl+= / Ctrl+- /
+#              Ctrl+0 and View > Zoom In/Out/Fit/Actual Size. Zoom persists
+#              across sheet switches and file loads
 #
 # ============================================================================
 # File structure for your project:
