@@ -1642,7 +1642,14 @@ class CanvasManager:
                 r = 6
                 canvas.create_oval(s.x1 - r, s.y1 - r, s.x2 + r, s.y2 + r,
                                    outline="#3a86ff", width=3, tags="net_highlight")
-        canvas.tag_lower("net_highlight")
+        # Sit just ABOVE the filled white page but BELOW the shapes; a plain
+        # tag_lower would drop the halo behind the page and hide it.
+        if canvas.find_withtag("page"):
+            canvas.tag_raise("net_highlight", "page")
+        else:
+            canvas.tag_lower("net_highlight")
+        if canvas.find_withtag("shape"):
+            canvas.tag_lower("net_highlight", "shape")
         return len(matches)
 
     def update_connected_lines(self, moved_shape, skip_ids=None):
