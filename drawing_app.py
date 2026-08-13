@@ -218,6 +218,7 @@ class DrawingApp:
         # Drawing state
         self.current_tool = "select"
         self.current_color = "black"
+        self.theme = "light"   # "light" | "dark" background
         self.current_fill = ""
         self.line_width = 2
         self.annotation_dash = "dashed"   # default Note Line style
@@ -348,6 +349,18 @@ class DrawingApp:
         arrange_menu.add_command(label="Bring to Front", command=self.canvas_manager.bring_to_front)
         arrange_menu.add_command(label="Send to Back", command=self.canvas_manager.send_to_back)
 
+        shapes_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Shapes", menu=shapes_menu)
+        for _lbl, _tool in [("Square", "square"), ("Triangle", "triangle"),
+                            ("Mux", "mux"), ("Adder", "adder")]:
+            shapes_menu.add_command(label=_lbl,
+                                    command=lambda t=_tool: self.select_tool(t))
+        shapes_menu.add_separator()
+        for _lbl, _tool in [("Note Arrow", "annotation_arrow"),
+                            ("Note Line", "annotation_line")]:
+            shapes_menu.add_command(label=_lbl,
+                                    command=lambda t=_tool: self.select_tool(t))
+
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
         self.grid_enabled_var = tk.BooleanVar(value=True)
@@ -356,6 +369,13 @@ class DrawingApp:
         self.snap_enabled_var = tk.BooleanVar(value=True)
         view_menu.add_checkbutton(label="Snap to Grid", variable=self.snap_enabled_var,
                                   command=self.toggle_snap, accelerator="Ctrl+H")
+        self.theme_var = tk.StringVar(value=self.theme)
+        bg_menu = tk.Menu(view_menu, tearoff=0)
+        bg_menu.add_radiobutton(label="Light", value="light",
+                                variable=self.theme_var, command=self.apply_theme)
+        bg_menu.add_radiobutton(label="Dark", value="dark",
+                                variable=self.theme_var, command=self.apply_theme)
+        view_menu.add_cascade(label="Background", menu=bg_menu)
         view_menu.add_separator()
         view_menu.add_command(label="Zoom In", command=self.zoom_in, accelerator="Ctrl+=")
         view_menu.add_command(label="Zoom Out", command=self.zoom_out, accelerator="Ctrl+-")
@@ -492,8 +512,13 @@ class DrawingApp:
             ("Text",        "text",        "T",   "Add text label"),
         ]
 
+        # Less-used shapes live in the Shapes menu instead of the toolbar.
+        moved_to_menu = {"square", "triangle", "mux", "adder",
+                         "annotation_arrow", "annotation_line"}
         self.tool_buttons = {}
         for name, tool, icon, tooltip_text in tools:
+            if tool in moved_to_menu:
+                continue
             btn = ttk.Button(toolbar, text=icon, command=lambda t=tool: self.select_tool(t), width=3)
             btn.pack(side=tk.LEFT, padx=1)
             self.tool_buttons[tool] = btn
@@ -501,10 +526,13 @@ class DrawingApp:
 
         ttk.Separator(toolbar, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
 
-        self.color_btn = tk.Button(toolbar, text="●", bg=self.current_color,
-                                   command=self.choose_color, width=3, font=("Arial", 16))
+        self.color_btn = tk.Button(toolbar, command=self.choose_color,
+                                   font=("Arial", 10, "bold"))
         self.color_btn.pack(side=tk.LEFT, padx=2)
-        ToolTip(self.color_btn, "Choose color")
+        self._update_color_btn()
+        ToolTip(self.color_btn,
+                "Outline / line color — sets the default for new shapes and "
+                "recolors the selected shape(s), including their labels")
 
         self.fill_btn = tk.Button(toolbar, text="▣", command=self.choose_fill,
                                   width=3, font=("Arial", 16))
@@ -615,11 +643,49 @@ class DrawingApp:
         else:
             self.status_bar.config(text=f"Tool: {tool.capitalize()}")
 
+    def _update_color_btn(self):
+        """Show the toolbar Outline button as a labeled swatch of the current
+        color, with an auto-contrasting text color so the label stays legible."""
+        col = self.current_color or "black"
+        try:
+            r, g, b = self.color_btn.winfo_rgb(col)
+            lum = (0.299 * r + 0.587 * g + 0.114 * b) / 65535.0
+            fg = "black" if lum >= 0.5 else "white"
+        except Exception:
+            fg = "white"
+        self.color_btn.config(text="● Outline", bg=col, fg=fg,
+                              activebackground=col, activeforeground=fg)
+
     def choose_color(self):
         color = colorchooser.askcolor(initialcolor=self.current_color)[1]
-        if color:
-            self.current_color = color
-            self.color_btn.config(bg=color)
+        if not color:
+            return
+        self.current_color = color
+        self._update_color_btn()
+        # Also recolor the current selection's outline / line color (sets the
+        # stored shape.color); the toolbar color remains the default for new
+        # shapes. Fill is unaffected (use the Fill button for that).
+        cm = self.canvas_manager
+        targets = (list(cm.selected_shapes) if cm.selected_shapes
+                   else ([cm.selected_shape] if cm.selected_shape else []))
+        if not targets:
+            return
+        for s in targets:
+            s.color = color
+            # Match the shape's title label to the picked color too, so one
+            # click colors outline + label together (Add Label… still lets you
+            # set an independent label color).
+            if getattr(s, 'label', None):
+                s.label_color = color
+            cm.redraw_shape(s)
+        cm.redraw_junctions()
+        if cm.selected_shapes:
+            cm.draw_group_highlight()
+        cm.record_state()
+        self.file_manager.mark_modified()
+        n = len(targets)
+        self.status_bar.config(
+            text=f"Outline/line color set for {n} object{'s' if n != 1 else ''}")
 
     def update_width(self):
         self.line_width = self.width_var.get()
@@ -714,7 +780,7 @@ class DrawingApp:
         flat = [c for pt in path for c in pt]
         if len(flat) < 4:
             return
-        kw = dict(fill=self.current_color, width=self.line_width,
+        kw = dict(fill=self.canvas_manager.ink(self.current_color), width=self.line_width,
                   dash=(4, 4), joinstyle=tk.MITER, tags="ortho_preview")
         if self.current_tool == "ortho_arrow":
             kw.update(arrow=tk.LAST, arrowshape=(16, 20, 6))
@@ -1195,8 +1261,17 @@ class DrawingApp:
             return
         _sel = self.canvas_manager.selected_shape
         if getattr(_sel, 'annotation', False):
-            # Annotation arrows are free: grid snap only, never bind.
-            snap_x, snap_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
+            # Annotation lines/arrows never bind electrically. Prefer snapping
+            # the dragged end onto a nearby block's edge so it visually
+            # touches; otherwise fall back to grid snap.
+            ox, oy = ((_sel.x2, _sel.y2)
+                      if self.canvas_manager.editing_endpoint == "start"
+                      else (_sel.x1, _sel.y1))
+            edge = self.canvas_manager.annotation_edge_snap(x, y, ox, oy, exclude=_sel)
+            if edge:
+                snap_x, snap_y = edge
+            else:
+                snap_x, snap_y = (self.snap_point(x, y) if self.snap_to_grid else (x, y))
             snap_shape = None
         else:
             snap_x, snap_y, snap_shape = self.canvas_manager.get_snap_point(
@@ -1286,7 +1361,15 @@ class DrawingApp:
                     handler(x, y)
             return
 
-        if self.snap_to_grid:
+        if self.current_tool in ("annotation_line", "annotation_arrow"):
+            sx = self.canvas_manager.drag_data.get("x", x)
+            sy = self.canvas_manager.drag_data.get("y", y)
+            edge = self.canvas_manager.annotation_edge_snap(x, y, sx, sy)
+            if edge:
+                x, y = edge
+            elif self.snap_to_grid:
+                x, y = self.snap_point(x, y)
+        elif self.snap_to_grid:
             x, y = self.snap_point(x, y)
         self._release_draw(x, y)
 
@@ -1601,45 +1684,46 @@ class DrawingApp:
 
     def draw_preview(self, x1, y1, x2, y2):
         """Draw preview for regular (single-gesture) drawing tools."""
+        cc = self.canvas_manager.ink(self.current_color)
         if self.current_tool in ("line", "annotation_line"):
             return self.canvas.create_line(x1, y1, x2, y2,
-                                           fill=self.current_color, width=self.line_width, dash=(4, 4))
+                                           fill=cc, width=self.line_width, dash=(4, 4))
         elif self.current_tool in ("arrow", "annotation_arrow"):
-            return self.canvas.create_line(x1, y1, x2, y2, fill=self.current_color,
+            return self.canvas.create_line(x1, y1, x2, y2, fill=cc,
                                            width=self.line_width, arrow=tk.LAST,
                                            arrowshape=(16, 20, 6), dash=(4, 4))
         elif self.current_tool == "rectangle":
-            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=self.current_color,
+            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=cc,
                                                 width=self.line_width, dash=(4, 4))
         elif self.current_tool == "square":
             size = max(abs(x2 - x1), abs(y2 - y1))
             x2 = x1 + size if x2 > x1 else x1 - size
             y2 = y1 + size if y2 > y1 else y1 - size
-            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=self.current_color,
+            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=cc,
                                                 width=self.line_width, dash=(4, 4))
         elif self.current_tool == "circle":
             r = math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
             return self.canvas.create_oval(x1 - r, y1 - r, x1 + r, y1 + r,
-                                           outline=self.current_color, width=self.line_width, dash=(4, 4))
+                                           outline=cc, width=self.line_width, dash=(4, 4))
         elif self.current_tool == "ellipse":
-            return self.canvas.create_oval(x1, y1, x2, y2, outline=self.current_color,
+            return self.canvas.create_oval(x1, y1, x2, y2, outline=cc,
                                            width=self.line_width, dash=(4, 4))
         elif self.current_tool == "mux":
             inset = min(20, abs(y2 - y1) * 0.18)
             return self.canvas.create_polygon(
                 x1, y1, x1, y2, x2, y2 - inset, x2, y1 + inset,
-                outline=self.current_color, fill="", width=self.line_width, dash=(4, 4))
+                outline=cc, fill="", width=self.line_width, dash=(4, 4))
         elif self.current_tool in ("register", "adder"):
-            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=self.current_color,
+            return self.canvas.create_rectangle(x1, y1, x2, y2, outline=cc,
                                                 width=self.line_width, dash=(4, 4))
         elif self.current_tool == "triangle":
             cx = (x1 + x2) / 2
-            return self.canvas.create_polygon(cx, y1, x1, y2, x2, y2, outline=self.current_color,
+            return self.canvas.create_polygon(cx, y1, x1, y2, x2, y2, outline=cc,
                                               fill="", width=self.line_width, dash=(4, 4))
         elif self.current_tool in ("connector", "connector_on"):
             r = 17
             return self.canvas.create_oval(x1 - r, y1 - r, x1 + r, y1 + r,
-                                           outline=self.current_color,
+                                           outline=cc,
                                            width=self.line_width, dash=(4, 4))
         return None
 
@@ -2078,6 +2162,14 @@ class DrawingApp:
             self.draw_grid()
         self.status_bar.config(text=f"Grid spacing: {self.grid_spacing}px")
 
+    def apply_theme(self):
+        """Switch the canvas between light and dark backgrounds. Pure view
+        change: shape data is untouched — dark mode only remaps near-black
+        inks to a light foreground at draw time (see CanvasManager.ink)."""
+        self.theme = self.theme_var.get()
+        self.zoom_repaint()
+        self.status_bar.config(text=f"{self.theme.capitalize()} background")
+
     def draw_grid(self):
         """Draw grid sized to the ACTIVE SHEET's page dimensions (not the
         viewport), so the grid covers the real page regardless of window
@@ -2089,16 +2181,19 @@ class DrawingApp:
         w = sheet.get('width', 1700)
         h = sheet.get('height', 1100)
         sp = self.grid_spacing
+        dark = self.theme == "dark"
+        line_col = "#3a3a3a" if dark else "#E0E0E0"
+        dot_col = "#4a4a4a" if dark else "#B0B0B0"
         if self.grid_type == "lines":
             for x in range(0, w, sp):
-                self.canvas.create_line(x, 0, x, h, fill="#E0E0E0", tags="grid", state='disabled')
+                self.canvas.create_line(x, 0, x, h, fill=line_col, tags="grid", state='disabled')
             for y in range(0, h, sp):
-                self.canvas.create_line(0, y, w, y, fill="#E0E0E0", tags="grid", state='disabled')
+                self.canvas.create_line(0, y, w, y, fill=line_col, tags="grid", state='disabled')
         else:
             for x in range(0, w, sp):
                 for y in range(0, h, sp):
                     self.canvas.create_oval(x-1, y-1, x+1, y+1,
-                                            fill="#B0B0B0", outline="", tags="grid", state='disabled')
+                                            fill=dot_col, outline="", tags="grid", state='disabled')
         self.canvas.tag_lower("grid")
         self.canvas.tag_raise("grid", "page")
 
@@ -2258,9 +2353,14 @@ class DrawingApp:
         sheet = self.canvas_manager.sheets[self.canvas_manager.active_sheet]
         w = sheet.get('width', 1700)
         h = sheet.get('height', 1100)
-        self.canvas.config(bg="#B8B8B8")
-        self.canvas.create_rectangle(0, 0, w, h, fill="white", outline="#888888",
-                                     width=1, tags="page")
+        if self.theme == "dark":
+            self.canvas.config(bg="#2b2b2b")
+            self.canvas.create_rectangle(0, 0, w, h, fill="#1e1e1e",
+                                         outline="#555555", width=1, tags="page")
+        else:
+            self.canvas.config(bg="#B8B8B8")
+            self.canvas.create_rectangle(0, 0, w, h, fill="white",
+                                         outline="#888888", width=1, tags="page")
         self.canvas.tag_lower("page")
 
     def _sync_sheet_size_check(self):
@@ -2438,15 +2538,28 @@ class DrawingApp:
         if shape.shape_type == "text":
             messagebox.showinfo("Cannot Label Text", "Text shapes cannot have labels.")
             return
-        dialog = LabelInputDialog(self.root, "Add Label to Shape", initial_text=shape.label or "")
+        dialog = LabelInputDialog(self.root, "Add Label to Shape",
+                                  initial_text=shape.label or "",
+                                  initial_font=getattr(shape, 'label_font', 'Arial'),
+                                  initial_size=getattr(shape, 'label_size', 10),
+                                  initial_color=getattr(shape, 'label_color', 'black'),
+                                  initial_bold=getattr(shape, 'label_bold', False),
+                                  initial_italic=getattr(shape, 'label_italic', False),
+                                  initial_align=getattr(shape, 'label_align', 'center'))
         if dialog.result is not None:
-            if dialog.result == "":
+            if dialog.result['text'] == "":
                 if shape.label_canvas_id:
                     self.canvas.delete(shape.label_canvas_id)
                     shape.label_canvas_id = None
                 shape.label = None
             else:
-                shape.label = dialog.result
+                shape.label = dialog.result['text']
+                shape.label_font = dialog.result['font']
+                shape.label_size = dialog.result['size']
+                shape.label_color = dialog.result['color']
+                shape.label_bold = dialog.result['bold']
+                shape.label_italic = dialog.result['italic']
+                shape.label_align = dialog.result['align']
                 if shape.label_offset_x == 0 and shape.label_offset_y == 0:
                     # Lines: place label above; all other shapes: place below
                     shape.label_offset_y = -20 if shape.shape_type in LINE_TYPES else 20
