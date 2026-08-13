@@ -9,44 +9,98 @@ on cancel) and block via wait_window. They have no dependency on the app
 object; callers pass in any initial values.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog, colorchooser
 
 from canvas_manager import DASH_PATTERNS, DASH_ORDER, DASH_LABELS
 
 
 class LabelInputDialog:
-    def __init__(self, parent, title, initial_text=""):
+    def __init__(self, parent, title, initial_text="", initial_font="Arial",
+                 initial_size=10, initial_color="black", initial_bold=False, initial_italic=False,
+                 initial_align="center"):
         self.result = None
+        self.color = initial_color or "black"
         self.dialog = tk.Toplevel(parent)
         self.dialog.title(title)
         self.dialog.transient(parent)
         self.dialog.grab_set()
-        self.dialog.geometry("350x150")
+        self.dialog.geometry("380x360")
 
         f = ttk.Frame(self.dialog, padding=20)
         f.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(f, text="Label Text:").pack(anchor=tk.W, pady=(0, 5))
-        self.entry = ttk.Entry(f, width=40)
-        self.entry.pack(fill=tk.X, pady=(0, 15))
-        self.entry.insert(0, initial_text)
-        self.entry.focus()
-        self.entry.select_range(0, tk.END)
+
+        ttk.Label(f, text="Label Text\n(Enter = new line,\nCtrl+Enter = OK):"
+                  ).grid(row=0, column=0, sticky=tk.NW, pady=(0, 8))
+        self.text_widget = tk.Text(f, width=28, height=3, wrap=tk.WORD)
+        self.text_widget.grid(row=0, column=1, sticky=tk.W, pady=(0, 8))
+        self.text_widget.insert("1.0", initial_text)
+        self.text_widget.focus()
+
+        ttk.Label(f, text="Font:").grid(row=1, column=0, sticky=tk.W, pady=4)
+        self.font_family = tk.StringVar(value=initial_font or "Arial")
+        ttk.Combobox(f, textvariable=self.font_family, width=17, state="readonly",
+                     values=["Arial", "Times New Roman", "Courier New",
+                             "Helvetica", "Verdana", "Georgia", "Comic Sans MS"]
+                     ).grid(row=1, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(f, text="Size:").grid(row=2, column=0, sticky=tk.W, pady=4)
+        self.font_size = tk.IntVar(value=int(initial_size or 10))
+        ttk.Spinbox(f, from_=6, to=72, textvariable=self.font_size, width=8
+                    ).grid(row=2, column=1, sticky=tk.W, pady=4)
+
+        ttk.Label(f, text="Color:").grid(row=3, column=0, sticky=tk.W, pady=4)
+        self.color_btn = tk.Button(f, text="  ", width=6, relief=tk.RIDGE,
+                                   bg=self.color, command=self.pick_color)
+        self.color_btn.grid(row=3, column=1, sticky=tk.W, pady=4)
+
+        sf = ttk.Frame(f)
+        sf.grid(row=4, column=1, sticky=tk.W, pady=4)
+        self.font_bold = tk.BooleanVar(value=bool(initial_bold))
+        ttk.Checkbutton(sf, text="Bold", variable=self.font_bold).pack(side=tk.LEFT, padx=(0, 10))
+        self.font_italic = tk.BooleanVar(value=bool(initial_italic))
+        ttk.Checkbutton(sf, text="Italic", variable=self.font_italic).pack(side=tk.LEFT)
+
+        ttk.Label(f, text="Align:").grid(row=5, column=0, sticky=tk.W, pady=4)
+        af = ttk.Frame(f)
+        af.grid(row=5, column=1, sticky=tk.W, pady=4)
+        self.text_align = tk.StringVar(value=initial_align or "center")
+        for _lbl, _val in (("Left", "left"), ("Center", "center"), ("Right", "right")):
+            ttk.Radiobutton(af, text=_lbl, value=_val,
+                            variable=self.text_align).pack(side=tk.LEFT, padx=3)
 
         bf = ttk.Frame(f)
-        bf.pack(fill=tk.X)
+        bf.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(16, 0))
         ttk.Button(bf, text="OK", command=self.ok_clicked).pack(side=tk.RIGHT, padx=5)
         ttk.Button(bf, text="Cancel", command=self.cancel_clicked).pack(side=tk.RIGHT)
         ttk.Button(bf, text="Remove Label", command=self.remove_clicked).pack(side=tk.LEFT)
-        self.dialog.bind("<Return>", lambda e: self.ok_clicked())
+        self.text_widget.bind("<Control-Return>", lambda e: (self.ok_clicked(), "break")[1])
         self.dialog.bind("<Escape>", lambda e: self.cancel_clicked())
         parent.wait_window(self.dialog)
 
+    def pick_color(self):
+        _rgb, hx = colorchooser.askcolor(color=self.color, parent=self.dialog,
+                                         title="Label Color")
+        if hx:
+            self.color = hx
+            self.color_btn.config(bg=hx)
+
+    def _payload(self, text):
+        try:
+            size = max(1, int(self.font_size.get()))
+        except (tk.TclError, ValueError):
+            size = 10
+        return {'text': text, 'font': self.font_family.get(),
+                'size': size, 'color': self.color,
+                'bold': self.font_bold.get(),
+                'italic': self.font_italic.get(),
+                'align': self.text_align.get()}
+
     def ok_clicked(self):
-        self.result = self.entry.get().strip()
+        self.result = self._payload(self.text_widget.get("1.0", "end-1c").strip())
         self.dialog.destroy()
 
     def remove_clicked(self):
-        self.result = ""
+        self.result = self._payload("")
         self.dialog.destroy()
 
     def cancel_clicked(self):
