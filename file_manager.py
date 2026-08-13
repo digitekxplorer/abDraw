@@ -344,8 +344,8 @@ class FileManager:
     def _img_block(self, draw, s, T):
         """Draw a block/primitive body (no ports) to the export image."""
         import math
-        col = s.color
-        fill = s.fill_color or None
+        col = "black"   # export: force black ink
+        fill = "white"   # export: white fill so black labels stay readable
         w = max(1, int(s.width))
         # Normalize: a shape dragged past its opposite corner has x1>x2 or
         # y1>y2 -- Tk's canvas tolerates either order, PIL's ImageDraw does not.
@@ -369,7 +369,7 @@ class FileManager:
                 draw.line(pts + [pts[0]], fill=col, width=w, joint="curve")
         elif s.shape_type == "connector":
             draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col,
-                         fill=(s.fill_color or "white"), width=max(2, w))
+                         fill="white", width=max(2, w))
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, getattr(s, 'conn_name', None) or "?",
                        self._font(12, bold=True),
@@ -377,7 +377,7 @@ class FileManager:
                        self._anchor("center"), allow_light=True)
         elif s.shape_type == "connector_on":
             draw.ellipse([T(bx1, by1), T(bx2, by2)], outline=col,
-                         fill=(s.fill_color or "white"), width=max(2, w))
+                         fill="white", width=max(2, w))
             ins = min(4, (bx2 - bx1) / 2 - 0.5, (by2 - by1) / 2 - 0.5)
             if ins > 0:
                 draw.ellipse([T(bx1 + ins, by1 + ins), T(bx2 - ins, by2 - ins)],
@@ -400,8 +400,13 @@ class FileManager:
             lx = (s.x1 + s.x2) / 2 + getattr(s, 'label_offset_x', 0)
             ly = (s.y1 + s.y2) / 2 + getattr(s, 'label_offset_y', 0)
             cx, cy = T(lx, ly)
-            self._text(draw, cx, cy, s.label, self._font(11, bold=True),
-                       col, self._anchor("center"))
+            self._text(draw, cx, cy, s.label,
+                       self._font(int(getattr(s, 'label_size', 10) or 10),
+                                  bold=getattr(s, 'label_bold', False),
+                                  italic=getattr(s, 'label_italic', False)),
+                       getattr(s, 'label_color', 'black') or "black",
+                       self._anchor("center"),
+                       align=getattr(s, 'label_align', 'center') or 'center')
 
     def _img_ports(self, draw, s, T):
         """Draw pin dots, labels, clock triangles, adder glyph to the image."""
@@ -412,7 +417,7 @@ class FileManager:
             side = p.get('side', 'L')
             dx, dy = T(px, py)
             draw.ellipse([dx - 2.5, dy - 2.5, dx + 2.5, dy + 2.5],
-                         fill=s.color, outline=s.color)
+                         fill="black", outline="black")
             if not p.get('hide_label'):
                 # Match the canvas: push a clk label past its clock triangle.
                 off = 12 if p['name'].lower() == 'clk' else (4 if side in ('L', 'R') else 5)
@@ -438,7 +443,7 @@ class FileManager:
                 else:
                     pts = [(px - tri, py), (px + tri, py), (px, py - tri - 2)]
                 draw.line([T(*pt) for pt in pts] + [T(*pts[0])],
-                          fill=s.color, width=max(1, int(s.width) - 1), joint="curve")
+                          fill="black", width=max(1, int(s.width) - 1), joint="curve")
         if s.shape_type == "adder":
             cx, cy = T((s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2)
             self._text(draw, cx, cy, "+", self._font(18, bold=True),
@@ -485,9 +490,9 @@ class FileManager:
         from canvas_manager import dash_tuple
         pat = dash_tuple(s)
         if pat:
-            self._dashed_poly(draw, pts, s.color, w, pat)
+            self._dashed_poly(draw, pts, "black", w, pat)
         else:
-            draw.line(pts, fill=s.color, width=w, joint="curve")
+            draw.line(pts, fill="black", width=w, joint="curve")
         # Arrowheads, honoring an explicit arrow_ends override.
         mode = getattr(s, 'arrow_ends', None)
         if mode is None:
@@ -502,7 +507,7 @@ class FileManager:
                   by - size * math.sin(ang - math.pi / 6))
             h2 = (bx - size * math.cos(ang + math.pi / 6),
                   by - size * math.sin(ang + math.pi / 6))
-            draw.polygon([T(bx, by), T(*h1), T(*h2)], fill=s.color)
+            draw.polygon([T(bx, by), T(*h1), T(*h2)], fill="black")
 
         if mode in ("one", "both"):
             _arrowhead(-1, -2)   # arrowhead at the end
@@ -515,10 +520,10 @@ class FileManager:
             if tap:
                 cx, cy, ux, uy = tap
                 draw.line([T(cx - 7, cy + 7), T(cx + 7, cy - 7)],
-                          fill=s.color, width=max(1, int(s.width)))
+                          fill="black", width=max(1, int(s.width)))
                 dx, dy = cm.slice_label_offset(s)
                 tx, ty = T(cx + dx, cy + dy)
-                self._text(draw, tx, ty, label, self._font(9), s.color,
+                self._text(draw, tx, ty, label, self._font(9), "black",
                            self._anchor("center"))
         # Net label — honor the user's drag override (net_label_dx/dy) just as
         # the canvas does, so exports match the on-screen position.
