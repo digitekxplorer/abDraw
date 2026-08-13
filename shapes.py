@@ -212,6 +212,12 @@ class Shape:
 
     # Label properties
     label: Optional[str] = None
+    label_font: str = "Arial"
+    label_size: int = 10
+    label_color: str = "black"
+    label_bold: bool = False
+    label_italic: bool = False
+    label_align: str = "center"
     label_canvas_id: Optional[int] = None
     label_offset_x: float = 0
     label_offset_y: float = 0
