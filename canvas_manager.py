@@ -474,7 +474,7 @@ class CanvasManager:
         if shape.shape_type in ("line", "arrow"):
             shape.canvas_id = canvas.create_line(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                fill=shape.color, width=lw, dash=dash,
+                fill=self.ink(shape.color), width=lw, dash=dash,
                 arrow=self.wire_arrow(shape), arrowshape=arsh, tags="shape"
             )
 
@@ -490,7 +490,7 @@ class CanvasManager:
             if len(dedup) < 2:
                 dedup.append(list(dedup[-1]))
             flat = [c for pt in dedup for c in pt]
-            kw = dict(fill=shape.color, width=lw, dash=dash,
+            kw = dict(fill=self.ink(shape.color), width=lw, dash=dash,
                       tags="shape", joinstyle=tk.MITER,
                       arrow=self.wire_arrow(shape), arrowshape=arsh)
             shape.canvas_id = canvas.create_line(*flat, **kw)
@@ -498,7 +498,7 @@ class CanvasManager:
         elif shape.shape_type in ["rectangle", "square", "register", "adder"]:
             shape.canvas_id = canvas.create_rectangle(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                outline=shape.color, width=shape.width,
+                outline=self.ink(shape.color), width=shape.width,
                 fill=shape.fill_color or "", tags="shape"
             )
         elif shape.shape_type == "mux":
@@ -506,26 +506,26 @@ class CanvasManager:
             inset = min(20, abs(y2 - y1) * 0.18)
             shape.canvas_id = canvas.create_polygon(
                 x1, y1, x1, y2, x2, y2 - inset, x2, y1 + inset,
-                outline=shape.color, width=shape.width,
+                outline=self.ink(shape.color), width=shape.width,
                 fill=shape.fill_color or "", tags="shape"
             )
         elif shape.shape_type in ["circle", "ellipse"]:
             shape.canvas_id = canvas.create_oval(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                outline=shape.color, width=shape.width,
+                outline=self.ink(shape.color), width=shape.width,
                 fill=shape.fill_color or "", tags="shape"
             )
         elif shape.shape_type == "triangle":
             cx = (shape.x1 + shape.x2) / 2
             shape.canvas_id = canvas.create_polygon(
                 cx, shape.y1, shape.x1, shape.y2, shape.x2, shape.y2,
-                outline=shape.color, fill=shape.fill_color or "",
+                outline=self.ink(shape.color), fill=shape.fill_color or "",
                 width=shape.width, tags="shape"
             )
         elif shape.shape_type == "connector":
             shape.canvas_id = canvas.create_oval(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                outline=shape.color, width=max(2, shape.width),
+                outline=self.ink(shape.color), width=max(2, shape.width),
                 fill=shape.fill_color or "white", tags="shape"
             )
             cx = (shape.x1 + shape.x2) / 2
@@ -537,7 +537,7 @@ class CanvasManager:
         elif shape.shape_type == "connector_on":
             shape.canvas_id = canvas.create_oval(
                 shape.x1, shape.y1, shape.x2, shape.y2,
-                outline=shape.color, width=max(2, shape.width),
+                outline=self.ink(shape.color), width=max(2, shape.width),
                 fill=shape.fill_color or "white", tags="shape"
             )
             # Inner concentric ring distinguishes the on-page connector from
@@ -546,7 +546,7 @@ class CanvasManager:
             canvas.create_oval(
                 shape.x1 + inset, shape.y1 + inset,
                 shape.x2 - inset, shape.y2 - inset,
-                outline=shape.color, width=max(1, shape.width - 1),
+                outline=self.ink(shape.color), width=max(1, shape.width - 1),
                 tags=("port", self.ports_tag(shape))
             )
             cx = (shape.x1 + shape.x2) / 2
@@ -565,7 +565,7 @@ class CanvasManager:
                        "right": tk.RIGHT}.get(align, tk.LEFT)
             shape.canvas_id = canvas.create_text(
                 shape.x1, shape.y1,
-                text=shape.text, font=font, fill=shape.color,
+                text=shape.text, font=font, fill=self.ink(shape.color),
                 anchor=anchor, justify=justify, tags="shape"
             )
 
@@ -574,8 +574,17 @@ class CanvasManager:
             cy = (shape.y1 + shape.y2) / 2
             shape.label_canvas_id = canvas.create_text(
                 cx + shape.label_offset_x, cy + shape.label_offset_y,
-                text=shape.label, font=("Arial", 10, "normal"),
-                fill="black", anchor=tk.CENTER, tags="shape_label"
+                text=shape.label,
+                font=(getattr(shape, 'label_font', 'Arial'),
+                      getattr(shape, 'label_size', 10),
+                      "bold" if getattr(shape, 'label_bold', False) else "normal",
+                      "italic" if getattr(shape, 'label_italic', False) else "roman"),
+                fill=self.ink(getattr(shape, 'label_color', 'black') or "black"),
+                anchor=tk.CENTER,
+                justify={"left": tk.LEFT, "center": tk.CENTER,
+                         "right": tk.RIGHT}.get(
+                             getattr(shape, 'label_align', 'center'), tk.CENTER),
+                tags="shape_label"
             )
 
         self.draw_ports(shape)
@@ -727,12 +736,12 @@ class CanvasManager:
             if tap:
                 cx, cy, ux, uy = tap
                 canvas.create_line(cx - 7, cy + 7, cx + 7, cy - 7,
-                                   fill=shape.color, width=max(1, shape.width),
+                                   fill=self.ink(shape.color), width=max(1, shape.width),
                                    tags=("deco", tag))
                 dx, dy = self.slice_label_offset(shape)
                 canvas.create_text(cx + dx, cy + dy,
                                    text=label, font=("Arial", 9),
-                                   fill=shape.color, anchor=tk.CENTER,
+                                   fill=self.ink(shape.color), anchor=tk.CENTER,
                                    tags=("deco", tag, "deco_label",
                                          self.slicelabel_tag(shape)))
 
@@ -748,6 +757,30 @@ class CanvasManager:
                                    tags=("deco", tag, "net_label",
                                          self.netlabel_tag(shape)))
 
+    FG_DARK = "#e8e8e8"
+
+    def _dark(self):
+        return getattr(self.app, 'theme', 'light') == 'dark'
+
+    def _is_darkish(self, color):
+        """True when a color is dark enough to be invisible on a dark canvas."""
+        try:
+            r, g, b = self.app.canvas.winfo_rgb(color)
+        except Exception:
+            return False
+        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 65535.0
+        return lum < 0.5
+
+    def ink(self, color):
+        """Remap a drawing 'ink' color (outline / line / text) for the active
+        theme. In dark mode ONLY the default black ink becomes a light
+        foreground so unstyled shapes stay visible; every explicitly chosen
+        color — including dark ones — is honored as-is. Light mode is a
+        no-op, so nothing changes for existing schematics."""
+        if not self._dark() or not color:
+            return color
+        return self.FG_DARK if str(color).lower() in ("black", "#000", "#000000") else color
+
     def label_color_for(self, shape):
         """Text color for interior pin names / glyphs that contrasts with
         the shape's fill, so labels stay readable on a dark fill."""
@@ -756,7 +789,7 @@ class CanvasManager:
         if not fill and shape.shape_type in ("connector", "connector_on"):
             fill = "white"
         if not fill:
-            return "#333333"
+            return self.FG_DARK if self._dark() else "#333333"
         try:
             r, g, b = self.app.canvas.winfo_rgb(fill)
         except Exception:
@@ -786,7 +819,7 @@ class CanvasManager:
             else:  # 'B'
                 lx, ly, anch = px, py - off, tk.S
             canvas.create_oval(px - 2.5, py - 2.5, px + 2.5, py + 2.5,
-                               fill=shape.color, outline=shape.color, tags=("port", tag))
+                               fill=self.ink(shape.color), outline=self.ink(shape.color), tags=("port", tag))
             if not p.get('hide_label'):
                 canvas.create_text(lx, ly, text=p['name'], font=("Arial", 8),
                                    fill=lbl_col, anchor=anch, tags=("port", tag, "port_label"))
@@ -802,7 +835,7 @@ class CanvasManager:
                     pts = (px - tri, py, px + tri, py, px, py + tri + 2)
                 else:
                     pts = (px - tri, py, px + tri, py, px, py - tri - 2)
-                canvas.create_polygon(*pts, outline=shape.color, fill="",
+                canvas.create_polygon(*pts, outline=self.ink(shape.color), fill="",
                                       width=max(1, shape.width - 1), tags=("port", tag))
 
         self.draw_primitive_decor(shape, tag)
@@ -1005,6 +1038,7 @@ class CanvasManager:
             'version': '2.0',
             'package_title': self.package_title,
             'active': self.active_sheet,
+            'theme': getattr(self.app, 'theme', 'light'),
             'sheets': [dict(name=s['name'], shapes=s['shapes'],
                             next_id=s.get('next_id', 1),
                             width=s.get('width', 1700),
@@ -1024,6 +1058,7 @@ class CanvasManager:
                            [{'name': 'Sheet 1', 'shapes': [], 'next_id': 1,
                              'width': 1700, 'height': 1100}]
             self.active_sheet = min(data.get('active', 0), len(self.sheets) - 1)
+            self._apply_loaded_theme(data.get('theme', 'light'))
         else:
             # Legacy: wrap the flat shape list into a single sheet.
             self.package_title = 'Untitled'
@@ -1031,9 +1066,21 @@ class CanvasManager:
                             'shapes': data.get('shapes', []),
                             'next_id': 1, 'width': 1700, 'height': 1100}]
             self.active_sheet = 0
+            self._apply_loaded_theme('light')
         self.undo_stack.clear()
         self.redo_stack.clear()
         self._load_active()
+
+    def _apply_loaded_theme(self, theme):
+        """Push a document's saved background theme onto the app + View menu."""
+        theme = theme if theme in ('light', 'dark') else 'light'
+        if hasattr(self.app, 'theme'):
+            self.app.theme = theme
+        if hasattr(self.app, 'theme_var'):
+            try:
+                self.app.theme_var.set(theme)
+            except Exception:
+                pass
 
     def reset_package(self):
         self.clear_all(record_undo=False)
@@ -1041,6 +1088,7 @@ class CanvasManager:
         self.sheets = [{'name': 'Sheet 1', 'shapes': [], 'next_id': 1,
                         'width': 1700, 'height': 1100}]
         self.active_sheet = 0
+        self._apply_loaded_theme('light')
         self._load_active()
 
     def draw_title_block(self):
@@ -1062,17 +1110,20 @@ class CanvasManager:
         x1, y1 = x2 - bw, y2 - bh
         r1, r2 = y1 + bh * 0.40, y1 + bh * 0.70
         pad = 8
-        canvas.create_rectangle(x1, y1, x2, y2, fill="white", outline="black",
+        tb_fill = "#242424" if self._dark() else "white"
+        tb_ink = self.ink("black")
+        canvas.create_rectangle(x1, y1, x2, y2, fill=tb_fill, outline=tb_ink,
                                 width=1.5, tags=("titleblock",))
-        canvas.create_line(x1, r1, x2, r1, fill="black", tags=("titleblock",))
-        canvas.create_line(x1, r2, x2, r2, fill="black", tags=("titleblock",))
+        canvas.create_line(x1, r1, x2, r1, fill=tb_ink, tags=("titleblock",))
+        canvas.create_line(x1, r2, x2, r2, fill=tb_ink, tags=("titleblock",))
         canvas.create_text(x1 + pad, y1 + pad, anchor=tk.NW, font=("Arial", 11, "bold"),
-                           text=self.package_title, tags=("titleblock",))
+                           fill=tb_ink, text=self.package_title, tags=("titleblock",))
         canvas.create_text(x2 - pad, y1 + pad, anchor=tk.NE, font=("Arial", 9),
-                           text="abDraw", tags=("titleblock",))
+                           fill=tb_ink, text="abDraw", tags=("titleblock",))
         canvas.create_text(x1 + pad, r1 + 5, anchor=tk.NW, font=("Arial", 9),
-                           text=sheet['name'], tags=("titleblock",))
+                           fill=tb_ink, text=sheet['name'], tags=("titleblock",))
         canvas.create_text(x2 - pad, r1 + 5, anchor=tk.NE, font=("Arial", 9),
+                           fill=tb_ink,
                            text=f"Sheet {self.active_sheet + 1} of {len(self.sheets)}",
                            tags=("titleblock",))
         canvas.create_text(x1 + pad, r2 + 4, anchor=tk.NW, font=("Arial", 8),
@@ -1402,6 +1453,48 @@ class CanvasManager:
     # Connections & snapping
     # ------------------------------------------------------------------
 
+    def annotation_edge_snap(self, x, y, from_x, from_y, exclude=None, max_dist=18):
+        """Non-electrical edge snap for annotation (note) lines/arrows.
+
+        If (x, y) is on or near a block, return the point on that block's
+        border along the ray from its centre toward (from_x, from_y) — the
+        line's OTHER endpoint — so the annotation visually touches the shape.
+        Creates NO connection and never affects electrical wires. Returns
+        None when no block is close enough (caller then grid-snaps)."""
+        best = None
+        best_d = None
+        for shape in self.shapes:
+            if (shape is exclude or shape.shape_type in LINE_TYPES
+                    or shape.shape_type == "text"):
+                continue
+            bx1, by1 = min(shape.x1, shape.x2), min(shape.y1, shape.y2)
+            bx2, by2 = max(shape.x1, shape.x2), max(shape.y1, shape.y2)
+            if not (bx1 - max_dist <= x <= bx2 + max_dist
+                    and by1 - max_dist <= y <= by2 + max_dist):
+                continue
+            cx, cy = (bx1 + bx2) / 2.0, (by1 + by2) / 2.0
+            d = (x - cx) ** 2 + (y - cy) ** 2
+            if best_d is None or d < best_d:
+                best_d = d
+                best = (shape, bx1, by1, bx2, by2, cx, cy)
+        if not best:
+            return None
+        shape, bx1, by1, bx2, by2, cx, cy = best
+        dx, dy = from_x - cx, from_y - cy
+        if dx == 0 and dy == 0:
+            return None
+        rx = max(1.0, (bx2 - bx1) / 2.0)
+        ry = max(1.0, (by2 - by1) / 2.0)
+        if shape.shape_type in ("circle", "ellipse"):
+            # Radial projection onto the ellipse perimeter.
+            scale = 1.0 / math.sqrt((dx / rx) ** 2 + (dy / ry) ** 2)
+            return (cx + dx * scale, cy + dy * scale)
+        # Rectangular-ish: intersect the ray with the bounding-box border.
+        tx = rx / abs(dx) if dx else float('inf')
+        ty = ry / abs(dy) if dy else float('inf')
+        t = min(tx, ty)
+        return (cx + dx * t, cy + dy * t)
+
     def rebuild_connections(self):
         for shape in self.shapes:
             if shape.shape_type in LINE_TYPES:
@@ -1556,7 +1649,7 @@ class CanvasManager:
         for pt in self.compute_junctions():
             r = 4
             canvas.create_oval(pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r,
-                               fill='black', outline='black', tags=("junction",))
+                               fill=self.ink('black'), outline=self.ink('black'), tags=("junction",))
 
     def compute_junctions(self, shapes=None):
         """Junction-dot points for the given shapes (defaults to self.shapes):
