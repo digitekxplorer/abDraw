@@ -82,6 +82,21 @@
 #              unchanged). Mouse wheel = zoom-to-cursor; Ctrl+= / Ctrl+- /
 #              Ctrl+0 and View > Zoom In/Out/Fit/Actual Size. Zoom persists
 #              across sheet switches and file loads
+# 08/13/2026 - Shape labels: Add Label (Ctrl+L) now sets label font, size,
+#              color, Bold/Italic, multi-line text (Enter = new line), and
+#              alignment (left/center/right); saved per shape
+#            - Light/Dark theme: View > Background toggles a dark canvas;
+#              only default-black ink auto-lightens (chosen colors honored);
+#              the theme persists in the saved package
+#            - Outline color: toolbar "Outline" button recolors the selected
+#              shape's outline/lines AND its label in one click (default for
+#              new shapes too)
+#            - Note lines/arrows can edge-snap onto a shape's border (touch an
+#              oval) without binding electrically
+#            - Shapes menu: less-used tools (Square/Triangle/Mux/Adder/Note
+#              Arrow/Note Line) moved off the toolbar into a Shapes menu
+#            - Export: always white background with black outlines/lines/text
+#              and white shape fills, regardless of on-screen theme/colors
 #
 # ============================================================================
 # File structure for your project:
