@@ -76,7 +76,59 @@ import copy as _copy
 from shapes import Shape, Connection, PORT_OUTWARD, port_lead_length
 
 # All shape types that behave as connectable line segments
-LINE_TYPES = ("line", "arrow", "ortho_line", "ortho_arrow")
+LINE_TYPES = ("line", "arrow", "ortho_line", "ortho_arrow", "block_arrow")
+
+
+def block_arrow_geom(x1, y1, x2, y2, width, both=False, thickness=None):
+    """World-space polygon points for a fat block arrow from (x1,y1) tail to
+    (x2,y2) head. `both` puts an arrowhead on each end (a double block arrow)."""
+    import math
+    dx, dy = x2 - x1, y2 - y1
+    L = math.hypot(dx, dy) or 1.0
+    ux, uy = dx / L, dy / L          # axis unit vector
+    px, py = -uy, ux                 # perpendicular unit vector
+    t = thickness if thickness else max(14, width * 4)   # body thickness
+    bh = t / 2.0                     # body half-width
+    hh = t                           # arrowhead half-width (wings)
+    hl = min(t * 1.6, L * 0.45) if both else min(t * 1.6, L * 0.9)  # head length
+
+    def P(d, o):
+        return (x1 + ux * d + px * o, y1 + uy * d + py * o)
+
+    if both:
+        bt, be = hl, L - hl
+        return [P(0, 0), P(bt, hh), P(bt, bh), P(be, bh), P(be, hh),
+                P(L, 0), P(be, -hh), P(be, -bh), P(bt, -bh), P(bt, -hh)]
+    be = L - hl
+    return [P(0, bh), P(be, bh), P(be, hh), P(L, 0),
+            P(be, -hh), P(be, -bh), P(0, -bh)]
+
+
+def rounded_rect_points(x1, y1, x2, y2, r, steps=8):
+    """Polygon points tracing a rounded rectangle (straight edges + quarter-arc
+    corners). r is clamped to half the smaller side. steps = arc segments."""
+    import math
+    x1, x2 = sorted((x1, x2))
+    y1, y2 = sorted((y1, y2))
+    r = min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0)
+    if r <= 0:
+        return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    corners = [(x2 - r, y1 + r, -90, 0), (x2 - r, y2 - r, 0, 90),
+               (x1 + r, y2 - r, 90, 180), (x1 + r, y1 + r, 180, 270)]
+    pts = []
+    for cx, cy, a0, a1 in corners:
+        for i in range(steps + 1):
+            a = math.radians(a0 + (a1 - a0) * i / steps)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+def block_arrow_points(shape):
+    """Block-arrow outline for a shape, honoring its arrow_ends override."""
+    both = getattr(shape, 'arrow_ends', None) == 'both'
+    return block_arrow_geom(shape.x1, shape.y1, shape.x2, shape.y2,
+                            shape.width, both,
+                            getattr(shape, 'block_thickness', None))
 
 # Named dash styles (Tk dash tuples; also used for PNG/PDF export). "solid" = no dash.
 DASH_PATTERNS = {
@@ -495,12 +547,29 @@ class CanvasManager:
                       arrow=self.wire_arrow(shape), arrowshape=arsh)
             shape.canvas_id = canvas.create_line(*flat, **kw)
 
-        elif shape.shape_type in ["rectangle", "square", "register", "adder"]:
-            shape.canvas_id = canvas.create_rectangle(
-                shape.x1, shape.y1, shape.x2, shape.y2,
-                outline=self.ink(shape.color), width=shape.width,
-                fill=shape.fill_color or "", tags="shape"
+        elif shape.shape_type == "block_arrow":
+            pts = block_arrow_points(shape)
+            flat = [c for pt in pts for c in pt]
+            shape.canvas_id = canvas.create_polygon(
+                *flat, outline=self.ink(shape.color), width=max(1, shape.width),
+                fill=(shape.fill_color or ""), joinstyle=tk.MITER, tags="shape"
             )
+
+        elif shape.shape_type in ["rectangle", "square", "register", "adder"]:
+            r = getattr(shape, 'corner_radius', 0) or 0
+            if r > 0 and shape.shape_type in ("rectangle", "square"):
+                pts = rounded_rect_points(shape.x1, shape.y1, shape.x2, shape.y2, r)
+                flat = [c for pt in pts for c in pt]
+                shape.canvas_id = canvas.create_polygon(
+                    *flat, outline=self.ink(shape.color), width=shape.width,
+                    fill=shape.fill_color or "", tags="shape", joinstyle=tk.ROUND
+                )
+            else:
+                shape.canvas_id = canvas.create_rectangle(
+                    shape.x1, shape.y1, shape.x2, shape.y2,
+                    outline=self.ink(shape.color), width=shape.width,
+                    fill=shape.fill_color or "", tags="shape"
+                )
         elif shape.shape_type == "mux":
             x1, y1, x2, y2 = shape.x1, shape.y1, shape.x2, shape.y2
             inset = min(20, abs(y2 - y1) * 0.18)
@@ -1608,7 +1677,7 @@ class CanvasManager:
 
     def wire_polyline(self, shape):
         """Drawn point list for a wire (straight or ortho), deduplicated."""
-        if shape.shape_type in ("line", "arrow"):
+        if shape.shape_type in ("line", "arrow", "block_arrow"):
             return [[shape.x1, shape.y1], [shape.x2, shape.y2]]
         if shape.shape_type in ("ortho_line", "ortho_arrow"):
             path = self.ortho_path(self.ortho_points(shape), shape.routing)
