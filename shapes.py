@@ -251,6 +251,12 @@ class Shape:
     # "long", "dotted", "dash-dot". See canvas_manager.DASH_PATTERNS.
     dash_pattern: str = ""
 
+    # Body thickness (px) for a block_arrow. None -> derive from width.
+    block_thickness: Optional[float] = None
+
+    # Corner radius (px) for a rectangle/square. 0 = square corners.
+    corner_radius: float = 0
+
     def to_dict(self):
         """Convert shape to dictionary for saving"""
         data = asdict(self)
@@ -279,6 +285,8 @@ class Shape:
         data.setdefault('annotation', False)
         data.setdefault('dashed', False)
         data.setdefault('dash_pattern', "")
+        data.setdefault('block_thickness', None)
+        data.setdefault('corner_radius', 0)
         return cls(**data)
 
     def get_bounds(self):
