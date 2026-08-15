@@ -295,7 +295,10 @@ class FileManager:
             for s in blocks:
                 self._img_block(draw, s, T)
             for s in wires:
-                self._img_wire(draw, cm, s, T)
+                if s.shape_type == "block_arrow":
+                    self._img_block_arrow(draw, s, T)
+                else:
+                    self._img_wire(draw, cm, s, T)
             for pt in cm.compute_junctions(shapes):
                 x, y = T(pt[0], pt[1])
                 draw.ellipse([x - 4, y - 4, x + 4, y + 4], fill='black', outline='black')
@@ -351,7 +354,16 @@ class FileManager:
         # y1>y2 -- Tk's canvas tolerates either order, PIL's ImageDraw does not.
         bx1, by1, bx2, by2 = s.get_bounds()
         if s.shape_type in ("rectangle", "square", "register", "adder"):
-            draw.rectangle([T(bx1, by1), T(bx2, by2)], outline=col, fill=fill, width=w)
+            r = getattr(s, 'corner_radius', 0) or 0
+            if r > 0 and s.shape_type in ("rectangle", "square"):
+                from canvas_manager import rounded_rect_points
+                pts = [T(px, py) for px, py in
+                       rounded_rect_points(bx1, by1, bx2, by2, r, 10)]
+                draw.polygon(pts, outline=col, fill=fill)
+                if w > 1:
+                    draw.line(pts + [pts[0]], fill=col, width=w, joint="curve")
+            else:
+                draw.rectangle([T(bx1, by1), T(bx2, by2)], outline=col, fill=fill, width=w)
         elif s.shape_type == "mux":
             inset = min(20, abs(s.y2 - s.y1) * 0.18)
             pts = [T(s.x1, s.y1), T(s.x1, s.y2),
@@ -477,6 +489,16 @@ class FileManager:
                     idx = (idx + 1) % len(pattern)
                     on = not on
                     remain = float(pattern[idx])
+
+    def _img_block_arrow(self, draw, s, T):
+        """Draw a filled block arrow to the export image (white fill, black
+        outline, matching the schematic export convention)."""
+        from canvas_manager import block_arrow_points
+        pts = [T(px, py) for (px, py) in block_arrow_points(s)]
+        w = max(1, int(s.width))
+        draw.polygon(pts, outline="black", fill="white")
+        if w > 1:
+            draw.line(pts + [pts[0]], fill="black", width=w, joint="curve")
 
     def _img_wire(self, draw, cm, s, T):
         """Draw a wire (straight/ortho), bus width, arrowhead, slice tap, net label."""
