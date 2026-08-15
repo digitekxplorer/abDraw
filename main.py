@@ -97,6 +97,8 @@
 #              Arrow/Note Line) moved off the toolbar into a Shapes menu
 #            - Export: always white background with black outlines/lines/text
 #              and white shape fills, regardless of on-screen theme/colors
+# 08/15/2026 - Block arrows (filled/outline/double, adjustable thickness + free
+#              rotation), rounded corners for rect/square, Match Selected Color
 #
 # ============================================================================
 # File structure for your project:
