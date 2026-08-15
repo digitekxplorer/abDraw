@@ -21,6 +21,7 @@ from dialogs import (LabelInputDialog, SheetSizeDialog, NoteStyleDialog,
 FILLABLE_TYPES = {
     "rectangle", "square", "circle", "ellipse", "triangle",
     "mux", "register", "adder", "connector", "connector_on",
+    "block_arrow",
 }
 
 
@@ -222,6 +223,10 @@ class DrawingApp:
         self.current_fill = ""
         self.line_width = 2
         self.annotation_dash = "dashed"   # default Note Line style
+        self.block_thickness = 16         # default block-arrow body thickness (px)
+        self.corner_radius = 0            # default corner radius for rect/square (px)
+        self._prev_color = None           # last selected shape's outline color
+        self._prev_fill = None            # last selected shape's fill color
 
         # Grid
         self.grid_enabled = True
@@ -331,6 +336,7 @@ class DrawingApp:
         edit_menu.add_command(label="Bit-Slice Label Distance...", command=self.ui_set_slice_label_distance)
         edit_menu.add_command(label="Net Label...", command=self.edit_net_label_of_selected, accelerator="Ctrl+Shift+N")
         edit_menu.add_command(label="Net Label Distance...", command=self.ui_set_net_label_distance)
+        edit_menu.add_command(label="Match Selected Color", command=self.match_previous_color, accelerator="Ctrl+M")
         edit_menu.add_command(label="Rotate Connector Port", command=self.rotate_connector_of_selected, accelerator="Ctrl+R")
         edit_menu.add_command(label="Rename Connector...", command=self.rename_connector_of_selected)
         edit_menu.add_command(label="Auto-Route Wire", command=self.auto_route_selected)
@@ -360,6 +366,19 @@ class DrawingApp:
                             ("Note Line", "annotation_line")]:
             shapes_menu.add_command(label=_lbl,
                                     command=lambda t=_tool: self.select_tool(t))
+        shapes_menu.add_separator()
+        for _lbl, _tool in [("Block Arrow", "block_arrow"),
+                            ("Block Arrow (outline)", "block_arrow_outline"),
+                            ("Block Arrow (double)", "block_arrow_double")]:
+            shapes_menu.add_command(label=_lbl,
+                                    command=lambda t=_tool: self.select_tool(t))
+        shapes_menu.add_command(label="Block Arrow Thickness...",
+                                command=self.set_block_thickness)
+        shapes_menu.add_command(label="Rotate Block Arrow...",
+                                command=self.rotate_block_arrow_prompt)
+        shapes_menu.add_separator()
+        shapes_menu.add_command(label="Rounded Corners...",
+                                command=self.set_corner_radius)
 
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
@@ -584,12 +603,13 @@ class DrawingApp:
         self.root.bind("<Control-Shift-P>", lambda e: self.special_pins_of_selected())
         self.root.bind("<Control-Shift-N>", lambda e: self.edit_net_label_of_selected())
         self.root.bind("<Control-b>", lambda e: self.toggle_bus_of_selected())
+        self.root.bind("<Control-m>", lambda e: self.match_previous_color())
         self.root.bind("<Control-r>", lambda e: self.rotate_connector_of_selected())
         self.root.bind("<Control-Shift-A>", lambda e: self.cycle_wire_arrows())
         self.root.bind("<Escape>", lambda e: self.deselect_all())
         self.root.bind("<Return>", lambda e: self._finish_ortho_if_active())
-        self.root.bind("<r>", lambda e: self._flip_ortho_routing())
-        self.root.bind("<R>", lambda e: self._flip_ortho_routing())
+        self.root.bind("<r>", lambda e: self._flip_ortho_routing(15))
+        self.root.bind("<R>", lambda e: self._flip_ortho_routing(-15))
         self.root.bind("<Control-equal>", lambda e: self.zoom_in())
         self.root.bind("<Control-plus>", lambda e: self.zoom_in())
         self.root.bind("<Control-minus>", lambda e: self.zoom_out())
@@ -656,8 +676,43 @@ class DrawingApp:
         self.color_btn.config(text="● Outline", bg=col, fg=fg,
                               activebackground=col, activeforeground=fg)
 
+    def match_previous_color(self):
+        """Copy the outline + fill color of the previously selected shape onto
+        the current selection (single or group). Ctrl+M."""
+        if self._prev_color is None and self._prev_fill is None:
+            self.status_bar.config(
+                text="No previous shape color yet — select a shape, then another.")
+            return
+        cm = self.canvas_manager
+        targets = (list(cm.selected_shapes) if cm.selected_shapes
+                   else ([cm.selected_shape] if cm.selected_shape else []))
+        if not targets:
+            self.status_bar.config(text="Select a shape first to match its color.")
+            return
+        for s in targets:
+            if self._prev_color is not None:
+                s.color = self._prev_color
+                if getattr(s, 'label', None):
+                    s.label_color = self._prev_color
+            if s.shape_type in FILLABLE_TYPES:
+                s.fill_color = self._prev_fill
+            cm.redraw_shape(s)
+        cm.redraw_junctions()
+        if cm.selected_shapes:
+            cm.draw_group_highlight()
+        cm.record_state()
+        self.file_manager.mark_modified()
+        fillc = self._prev_fill if self._prev_fill else "none"
+        n = len(targets)
+        self.status_bar.config(
+            text=f"Matched previous color (outline {self._prev_color}, "
+                 f"fill {fillc}) to {n} object{'s' if n != 1 else ''}")
+
     def choose_color(self):
-        color = colorchooser.askcolor(initialcolor=self.current_color)[1]
+        cm = self.canvas_manager
+        sel = cm.selected_shape or (cm.selected_shapes[0] if cm.selected_shapes else None)
+        init = (sel.color if sel and sel.color else self.current_color)
+        color = colorchooser.askcolor(initialcolor=init)[1]
         if not color:
             return
         self.current_color = color
@@ -735,7 +790,11 @@ class DrawingApp:
             menu.grab_release()
 
     def _pick_fill_color(self):
-        init = self.current_fill or "#ffffff"
+        sel = self.canvas_manager.selected_shape
+        if sel and sel.shape_type in FILLABLE_TYPES and sel.fill_color:
+            init = sel.fill_color
+        else:
+            init = self.current_fill or "#ffffff"
         color = colorchooser.askcolor(initialcolor=init, title="Fill Color")[1]
         if color:
             self.set_fill(color)
@@ -757,11 +816,14 @@ class DrawingApp:
     # Ortho drawing helpers
     # ------------------------------------------------------------------
 
-    def _flip_ortho_routing(self):
-        """Flip h_first / v_first on the selected ortho line (press R)."""
+    def _flip_ortho_routing(self, deg=15):
+        """R key: flip an ortho line's routing, or rotate a selected block
+        arrow by `deg` degrees about its midpoint (finer than 45°)."""
         sel = self.canvas_manager.selected_shape
         if sel and sel.shape_type in ("ortho_line", "ortho_arrow"):
             self.canvas_manager.flip_routing(sel)
+        elif sel and sel.shape_type == "block_arrow":
+            self._rotate_block_arrow(sel, deg)
 
     def _cancel_ortho_drawing(self):
         """Abort an in-progress ortho line."""
@@ -1361,7 +1423,9 @@ class DrawingApp:
                     handler(x, y)
             return
 
-        if self.current_tool in ("annotation_line", "annotation_arrow"):
+        if self.current_tool in ("annotation_line", "annotation_arrow",
+                                 "block_arrow", "block_arrow_outline",
+                                 "block_arrow_double"):
             sx = self.canvas_manager.drag_data.get("x", x)
             sy = self.canvas_manager.drag_data.get("y", y)
             edge = self.canvas_manager.annotation_edge_snap(x, y, sx, sy)
@@ -1692,6 +1756,15 @@ class DrawingApp:
             return self.canvas.create_line(x1, y1, x2, y2, fill=cc,
                                            width=self.line_width, arrow=tk.LAST,
                                            arrowshape=(16, 20, 6), dash=(4, 4))
+        elif self.current_tool in ("block_arrow", "block_arrow_outline",
+                                   "block_arrow_double"):
+            from canvas_manager import block_arrow_geom
+            both = self.current_tool == "block_arrow_double"
+            pts = block_arrow_geom(x1, y1, x2, y2, self.line_width, both,
+                                   self.block_thickness)
+            flat = [c for pt in pts for c in pt]
+            return self.canvas.create_polygon(*flat, outline=cc, fill="",
+                                              width=self.line_width, dash=(4, 4))
         elif self.current_tool == "rectangle":
             return self.canvas.create_rectangle(x1, y1, x2, y2, outline=cc,
                                                 width=self.line_width, dash=(4, 4))
@@ -1791,15 +1864,32 @@ class DrawingApp:
                          shape_type="line", annotation=True,
                          dashed=(pat != "solid"), dash_pattern=pat)
 
+        if self.current_tool in ("block_arrow", "block_arrow_outline",
+                                 "block_arrow_double"):
+            fill = ("" if self.current_tool == "block_arrow_outline"
+                    else (self.current_fill or "#8a94a6"))
+            ends = "both" if self.current_tool == "block_arrow_double" else "one"
+            return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
+                         color=self.current_color, width=self.line_width,
+                         shape_type="block_arrow", annotation=True,
+                         fill_color=fill, arrow_ends=ends,
+                         block_thickness=self.block_thickness)
+
+        cr = self.corner_radius if self.current_tool in ("rectangle", "square") else 0
         return Shape(x1=x1, y1=y1, x2=x2, y2=y2,
                      color=self.current_color, width=self.line_width,
-                     shape_type=self.current_tool, fill_color=self.current_fill)
+                     shape_type=self.current_tool, fill_color=self.current_fill,
+                     corner_radius=cr)
 
     # ------------------------------------------------------------------
     # Selection & handles
     # ------------------------------------------------------------------
 
     def handle_selection(self, x, y):
+        _outgoing = self.canvas_manager.selected_shape
+        if _outgoing is not None:
+            self._prev_color = _outgoing.color
+            self._prev_fill = _outgoing.fill_color
         self.canvas_manager.clear_selection()
         self.editing_label = False
         self.label_shape = None
@@ -1836,7 +1926,7 @@ class DrawingApp:
                                      f"({n} waypoint{'s' if n != 1 else ''}) "
                                      f"— drag any point | R to flip routing"
                             )
-                        elif shape.shape_type in ("line", "arrow"):
+                        elif shape.shape_type in ("line", "arrow", "block_arrow"):
                             self.draw_endpoint_handles(shape)
                             self.status_bar.config(
                                 text=f"Selected {shape.shape_type} — drag endpoints to connect")
@@ -1855,6 +1945,10 @@ class DrawingApp:
                                      f"'{shape.conn_name}' — same name = same node on this sheet")
                         else:
                             self.status_bar.config(text=f"Selected {shape.shape_type}")
+                        cur = self.status_bar.cget("text")
+                        fillc = shape.fill_color if shape.fill_color else "none"
+                        self.status_bar.config(
+                            text=f"{cur}   |   outline {shape.color}, fill {fillc}")
                         return
 
         self.status_bar.config(text="No shape selected")
@@ -2052,7 +2146,7 @@ class DrawingApp:
 
     def draw_endpoint_handles(self, shape):
         """Draw handles on straight line/arrow endpoints."""
-        if shape.shape_type not in ("line", "arrow"):
+        if shape.shape_type not in ("line", "arrow", "block_arrow"):
             return
         hs = 6
         self.canvas.create_oval(shape.x1 - hs, shape.y1 - hs, shape.x1 + hs, shape.y1 + hs,
@@ -2269,7 +2363,7 @@ class DrawingApp:
                         outline="blue", dash=(5, 5), width=2, tags="highlight")
             if shape.shape_type in ("ortho_line", "ortho_arrow"):
                 self.draw_ortho_handles(shape)
-            elif shape.shape_type in ("line", "arrow"):
+            elif shape.shape_type in ("line", "arrow", "block_arrow"):
                 self.draw_endpoint_handles(shape)
             elif shape.shape_type in ["rectangle", "square", "circle", "ellipse",
                                       "triangle", "mux", "register", "adder"]:
@@ -2787,6 +2881,80 @@ class DrawingApp:
         self.canvas_manager.record_state()
         self.status_bar.config(
             text=f"Connector attach side: {shape.ports[0]['side']}")
+
+    def _rotate_block_arrow(self, shape, deg):
+        """Rotate a block arrow by `deg` degrees about its midpoint."""
+        import math
+        cx = (shape.x1 + shape.x2) / 2.0
+        cy = (shape.y1 + shape.y2) / 2.0
+        a = math.radians(deg)
+        ca, sa = math.cos(a), math.sin(a)
+
+        def rot(px, py):
+            dx, dy = px - cx, py - cy
+            return (cx + dx * ca - dy * sa, cy + dx * sa + dy * ca)
+
+        shape.x1, shape.y1 = rot(shape.x1, shape.y1)
+        shape.x2, shape.y2 = rot(shape.x2, shape.y2)
+        self.canvas_manager.redraw_shape(shape)
+        self.canvas.delete("endpoint_handle")
+        self.draw_endpoint_handles(shape)
+        self.canvas_manager.record_state()
+        self.status_bar.config(text=f"Rotated block arrow {deg:+.0f}°")
+
+    def rotate_block_arrow_prompt(self):
+        shape = self.canvas_manager.selected_shape
+        if not shape or shape.shape_type != "block_arrow":
+            messagebox.showinfo("Select a Block Arrow",
+                                "Select a block arrow first to rotate it.")
+            return
+        deg = simpledialog.askfloat(
+            "Rotate Block Arrow",
+            "Rotation angle in degrees (+ = clockwise):",
+            initialvalue=15.0, parent=self.root)
+        if deg is None:
+            return
+        self._rotate_block_arrow(shape, deg)
+
+    def set_corner_radius(self):
+        """Set the rectangle/square corner radius: the default for new
+        rectangles/squares, and the selected one if it is a rect/square.
+        0 = square corners."""
+        cur = int(self.corner_radius or 0)
+        val = simpledialog.askinteger(
+            "Rounded Corners", "Corner radius in pixels (0 = square):",
+            initialvalue=cur, minvalue=0, maxvalue=300, parent=self.root)
+        if val is None:
+            return
+        self.corner_radius = val
+        shape = self.canvas_manager.selected_shape
+        if shape and shape.shape_type in ("rectangle", "square"):
+            shape.corner_radius = val
+            self.canvas_manager.redraw_shape(shape)
+            self.canvas.delete("resize_handle")
+            self.draw_resize_handles(shape)
+            self.canvas_manager.record_state()
+        self.status_bar.config(
+            text=("Square corners" if val == 0 else f"Corner radius: {val}px"))
+
+    def set_block_thickness(self):
+        """Set the block-arrow body thickness: the default for new block
+        arrows, and the selected block arrow if one is picked."""
+        cur = int(self.block_thickness or 16)
+        val = simpledialog.askinteger(
+            "Block Arrow Thickness", "Body thickness in pixels (4–200):",
+            initialvalue=cur, minvalue=4, maxvalue=200, parent=self.root)
+        if not val:
+            return
+        self.block_thickness = val
+        shape = self.canvas_manager.selected_shape
+        if shape and shape.shape_type == "block_arrow":
+            shape.block_thickness = val
+            self.canvas_manager.redraw_shape(shape)
+            self.canvas.delete("endpoint_handle")
+            self.draw_endpoint_handles(shape)
+            self.canvas_manager.record_state()
+        self.status_bar.config(text=f"Block arrow thickness: {val}px")
 
     def auto_route_selected(self):
         shape = self.canvas_manager.selected_shape
