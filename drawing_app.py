@@ -2512,6 +2512,8 @@ class DrawingApp:
                    command=lambda: self.ui_rename_sheet(cm.active_sheet)).pack(side=tk.LEFT, padx=1)
         ttk.Button(self.sheet_bar, text="Delete", width=7,
                    command=lambda: self.ui_delete_sheet(cm.active_sheet)).pack(side=tk.LEFT, padx=1)
+        ttk.Button(self.sheet_bar, text="Duplicate", width=9,
+                   command=self.ui_duplicate_sheet).pack(side=tk.LEFT, padx=1)
         ttk.Button(self.sheet_bar, text="◀ Move", width=7,
                    command=lambda: self.ui_move_sheet(-1)).pack(side=tk.LEFT, padx=(8, 1))
         ttk.Button(self.sheet_bar, text="Move ▶", width=7,
@@ -2529,6 +2531,17 @@ class DrawingApp:
     def ui_add_sheet(self):
         self.canvas_manager.add_sheet()
         self.status_bar.config(text="Added sheet")
+
+    def ui_duplicate_sheet(self):
+        self._reset_interaction_state()
+        cm = self.canvas_manager
+        if cm.duplicate_sheet(cm.active_sheet):
+            self.refresh_sheet_tabs()
+            self.draw_page_boundary()
+            self.draw_grid()
+            self.update_scrollregion()
+            self.status_bar.config(
+                text=f"Duplicated sheet — now editing '{cm.sheets[cm.active_sheet]['name']}'")
 
     def ui_move_sheet(self, delta):
         cm = self.canvas_manager
