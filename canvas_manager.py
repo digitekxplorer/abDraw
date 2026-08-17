@@ -1036,6 +1036,29 @@ class CanvasManager:
         self._load_active()
         self.app.file_manager.mark_modified()
 
+    def duplicate_sheet(self, index=None):
+        """Deep-copy a sheet (all shapes + page size) and insert it right after
+        the source. The copy becomes the active sheet."""
+        import copy
+        if index is None:
+            index = self.active_sheet
+        if not (0 <= index < len(self.sheets)):
+            return False
+        self.commit_active()
+        src = self.sheets[index]
+        new = {'name': f"{src['name']} copy",
+               'shapes': copy.deepcopy(src['shapes']),
+               'next_id': src.get('next_id', 1),
+               'width': src.get('width', 1700),
+               'height': src.get('height', 1100)}
+        self.sheets.insert(index + 1, new)
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.active_sheet = index + 1
+        self._load_active()
+        self.app.file_manager.mark_modified()
+        return True
+
     def delete_sheet(self, index):
         if len(self.sheets) <= 1 or not (0 <= index < len(self.sheets)):
             return False
